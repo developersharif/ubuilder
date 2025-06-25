@@ -18,6 +18,10 @@
     #define S_ISLNK(mode) (0)  // No symbolic links concept on Windows like Unix
     #define unlink _unlink
     #define chmod _chmod
+    #ifdef _MSC_VER
+        typedef ptrdiff_t ssize_t;  // Define ssize_t for MSVC
+        #define strdup _strdup
+    #endif
 #else
     #include <unistd.h>
 #endif
@@ -410,7 +414,7 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
                 size_t bytes_read = fread(buffer, 1, to_read, input_file);
                 if (bytes_read == 0) break;
                 fwrite(buffer, 1, bytes_read, ext_file);
-                remaining -= bytes_read;
+                remaining -= (uint32_t)bytes_read;
             }
             
             fclose(ext_file);

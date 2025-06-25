@@ -728,7 +728,7 @@ static ub_result_t embed_project_files(const ub_config_t* config) {
     
     // Write entry point
     if (config->entry_point) {
-        uint32_t entry_len = strlen(config->entry_point);
+        uint32_t entry_len = (uint32_t)strlen(config->entry_point);
         fwrite(&entry_len, sizeof(entry_len), 1, output_file);
         fwrite(config->entry_point, 1, entry_len, output_file);
     } else {
@@ -972,7 +972,7 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
             size_t bytes_read = fread(buffer, 1, to_read, data_file);
             if (bytes_read == 0) break;
             fwrite(buffer, 1, bytes_read, output_file);
-            remaining -= bytes_read;
+            remaining -= (uint32_t)bytes_read;
         }
         fclose(output_file);
         

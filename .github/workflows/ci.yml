@@ -24,7 +24,7 @@ jobs:
           chmod +x build-system/build.sh
           mkdir -p build
           cd build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_COMPRESSION=ON ..
           make -j$(nproc)
 
       - name: Run tests
@@ -56,26 +56,23 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install PHP, Python, Node.js, CMake, and development tools for Windows
-          choco install php python nodejs cmake
-          # Install vcpkg for Windows dependencies
-          git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat
-          C:\vcpkg\vcpkg install zlib:x64-windows
+          # Install PHP, Python, Node.js, CMake, and MinGW
+          choco install php python nodejs cmake mingw
+          # Add MinGW to PATH
+          $env:PATH = "C:\tools\mingw64\bin;$env:PATH"
+          echo "C:\tools\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build UBuilder
         run: |
           mkdir build
           cd build
-          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake ..
-          cmake --build . --config Release
+          cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DENABLE_COMPRESSION=ON
+          mingw32-make
 
       - name: Run tests
         run: |
           cd build
-          if (Test-Path ".\Release\test_ubuilder.exe") {
-            .\Release\test_ubuilder.exe
-          } elseif (Test-Path ".\test_ubuilder.exe") {
+          if (Test-Path ".\test_ubuilder.exe") {
             .\test_ubuilder.exe
           } else {
             Write-Host "Tests not built, skipping..."
@@ -84,16 +81,18 @@ jobs:
       - name: Test basic functionality
         run: |
           cd build
-          if (Test-Path ".\src\Release\ubuilder.exe") {
-            $ubuilder = ".\src\Release\ubuilder.exe"
-          } elseif (Test-Path ".\src\ubuilder.exe") {
+          if (Test-Path ".\src\ubuilder.exe") {
             $ubuilder = ".\src\ubuilder.exe"
           } else {
             Write-Host "UBuilder executable not found"
             exit 1
           }
 
-          # Test with a simple project first
+          # Test version and help first
+          & $ubuilder --version
+          & $ubuilder --help
+
+          # Test with a simple project
           New-Item -ItemType Directory -Force -Path "test-project"
           Set-Content -Path "test-project\main.php" -Value '<?php echo "Hello from UBuilder!\n"; ?>'
           Set-Content -Path "test-project\ubuilder.json" -Value '{"entry": "main.php", "runtime": "php"}'
@@ -110,16 +109,11 @@ jobs:
             }
           }
 
-          # Test version and help
-          & $ubuilder --version
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ubuilder-windows
-          path: |
-            build/src/Release/ubuilder.exe
-            build/src/ubuilder.exe
+          path: build/src/ubuilder.exe
 
   build-macos:
     runs-on: macos-latest
@@ -138,7 +132,7 @@ jobs:
         run: |
           mkdir -p build
           cd build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_COMPRESSION=ON ..
           make -j$(sysctl -n hw.ncpu)
 
       - name: Run tests

@@ -4,6 +4,8 @@
 // Suppress MSVC security warnings for standard C functions
 #ifdef _MSC_VER
     #define _CRT_SECURE_NO_WARNINGS
+    #pragma warning(disable: 4100)  // Unreferenced formal parameter
+    #pragma warning(disable: 4267)  // Conversion from size_t to smaller type
 #endif
 
 #include <stdint.h>
