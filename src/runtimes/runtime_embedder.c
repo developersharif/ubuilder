@@ -8,6 +8,7 @@
     #include <windows.h>
     #include <io.h>
     #include <direct.h>
+    #include <process.h>  // For _access constants
     #define popen _popen
     #define pclose _pclose
     #define access _access
@@ -15,6 +16,8 @@
     #define readlink(path, buf, size) (-1)  // Not available on Windows
     #define lstat stat  // Use stat instead of lstat on Windows
     #define S_ISLNK(mode) (0)  // No symbolic links concept on Windows like Unix
+    #define unlink _unlink
+    #define chmod _chmod
 #else
     #include <unistd.h>
 #endif
@@ -75,6 +78,25 @@ static char* resolve_binary_path(const char* path) {
     resolved_path[len] = '\0';
     
     // If it's a relative path, we need to resolve it relative to the original path
+#ifdef PLATFORM_WINDOWS
+    if (resolved_path[0] != '/' && !(strlen(resolved_path) > 1 && resolved_path[1] == ':')) {
+        // Relative path on Windows (not absolute like C:\path or /path)
+        char* dir = strdup(path);
+        char* last_slash = strrchr(dir, '\\');
+        if (!last_slash) last_slash = strrchr(dir, '/'); // Handle mixed separators
+        if (last_slash) {
+            *last_slash = '\0';
+            char* full_path = malloc(1024);
+            snprintf(full_path, 1024, "%s\\%s", dir, resolved_path);
+            free(dir);
+            free(resolved_path);
+            
+            // Recursively resolve in case of chained symlinks
+            return resolve_binary_path(full_path);
+        }
+        free(dir);
+    }
+#else
     if (resolved_path[0] != '/') {
         char* dir = strdup(path);
         char* last_slash = strrchr(dir, '/');
@@ -90,6 +112,7 @@ static char* resolve_binary_path(const char* path) {
         }
         free(dir);
     }
+#endif
     
     // For absolute paths, recursively resolve in case of chained symlinks
     struct stat st;
@@ -114,18 +137,36 @@ ub_result_t ub_detect_runtime_binary(ub_runtime_type_t runtime, ub_runtime_info_
     
     switch (runtime) {
         case UB_RUNTIME_PHP:
+#ifdef PLATFORM_WINDOWS
+            // On Windows, try to get the actual PHP executable path
+            which_cmd = "php -r \"echo PHP_BINARY;\"";
+            version_cmd = "php --version";
+#else
             which_cmd = "which php";
             version_cmd = "php --version | head -1";
+#endif
             binary_name = "php";
             break;
         case UB_RUNTIME_PYTHON:
+#ifdef PLATFORM_WINDOWS
+            // On Windows, try multiple approaches to find Python
+            which_cmd = "python -c \"import sys; print(sys.executable)\"";
+            version_cmd = "python --version";
+#else
             which_cmd = "which python3";
             version_cmd = "python3 --version";
-            binary_name = "python3";
+#endif
+            binary_name = "python";
             break;
         case UB_RUNTIME_NODEJS:
+#ifdef PLATFORM_WINDOWS
+            // On Windows, get the actual Node.js executable path
+            which_cmd = "node -p \"process.execPath\"";
+            version_cmd = "node --version";
+#else
             which_cmd = "which node";
             version_cmd = "node --version";
+#endif
             binary_name = "node";
             break;
         default:
@@ -147,7 +188,11 @@ ub_result_t ub_detect_runtime_binary(ub_runtime_type_t runtime, ub_runtime_info_
     }
     
     // Check if binary exists and is executable
+#ifdef PLATFORM_WINDOWS
+    if (access(resolved_path, 0) != 0) {  // Check if file exists on Windows
+#else
     if (access(resolved_path, X_OK) != 0) {
+#endif
         free(resolved_path);
         return UB_ERROR_RUNTIME_NOT_FOUND;
     }
