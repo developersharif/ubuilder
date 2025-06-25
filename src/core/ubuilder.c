@@ -318,8 +318,8 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     }
     
     // First try to find the new modular marker 
-    // For true runtime embedding, search only the last 1KB to avoid false positives
-    long search_size = 1024; // Search last 1KB only
+    // For true runtime embedding, search a larger area to ensure we find the marker
+    long search_size = (file_size > 10240) ? 10240 : file_size; // Search last 10KB or entire file if smaller
     long search_start = file_size - search_size;
     if (search_start < 0) search_start = 0;
     
@@ -336,11 +336,12 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     // Look for modular marker
     for (size_t i = 0; i <= bytes_read - strlen(modular_marker); i++) {
         if (memcmp(search_buffer + i, modular_marker, strlen(modular_marker)) == 0) {
-            // Found modular marker, try to read magic number and runtime type
+            // Found modular marker at the end, now read runtime info that comes after it
             size_t magic_pos = i + strlen(modular_marker);
             size_t runtime_pos = magic_pos + sizeof(uint32_t);
+            size_t data_offset_pos = i - sizeof(uint64_t); // Data offset is right before the marker
             
-            if (runtime_pos + sizeof(runtime) <= bytes_read) {
+            if (runtime_pos + sizeof(runtime) <= bytes_read && data_offset_pos < bytes_read) {
                 // Check magic number
                 uint32_t magic_number;
                 memcpy(&magic_number, search_buffer + magic_pos, sizeof(magic_number));
@@ -350,10 +351,15 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
                 
                 memcpy(&runtime, search_buffer + runtime_pos, sizeof(runtime));
                 
+                // Get data start offset
+                uint64_t data_start_offset_64;
+                memcpy(&data_start_offset_64, search_buffer + data_offset_pos, sizeof(data_start_offset_64));
+                long data_start_offset = (long)data_start_offset_64;
+                
                 // Verify this is a valid runtime type
                 if (runtime >= UB_RUNTIME_PYTHON && runtime <= UB_RUNTIME_NODEJS) {
-                    // Set file position to start of embedded data
-                    fseek(self_file, search_start + runtime_pos + sizeof(runtime), SEEK_SET);
+                    // Position file at the start of embedded data
+                    fseek(self_file, data_start_offset, SEEK_SET);
                     result = ub_run_modular_embedded_app(runtime, self_file, argc, argv);
                     free(search_buffer);
                     fclose(self_file);
@@ -811,16 +817,9 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
     
-    // Write modular runtime marker
-    const char* modular_marker = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";
-    fwrite(modular_marker, 1, strlen(modular_marker), output_file);
-    
-    // Write magic number for validation
-    uint32_t magic_number = 0xDEADBEEF;
-    fwrite(&magic_number, sizeof(magic_number), 1, output_file);
-    
-    // Write runtime type
-    fwrite(&config->runtime, sizeof(config->runtime), 1, output_file);
+    // Get the current file size to know where embedded data starts
+    fseek(output_file, 0, SEEK_END);
+    long data_start_offset = ftell(output_file);
     
     // 3. Embed runtime-specific runtime
     result = builder->embed_runtime(output_file);
@@ -845,6 +844,22 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
         fprintf(stderr, "Error: Failed to generate launcher for %s runtime\n", builder->name);
         return result;
     }
+    
+    // 6. Write footer with embedded data info
+    // First write the data start offset (use uint64_t for cross-platform consistency)
+    uint64_t data_start_offset_64 = (uint64_t)data_start_offset;
+    fwrite(&data_start_offset_64, sizeof(data_start_offset_64), 1, output_file);
+    
+    // Then write the marker
+    const char* modular_marker = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";
+    fwrite(modular_marker, 1, strlen(modular_marker), output_file);
+    
+    // Write magic number for validation
+    uint32_t magic_number = 0xDEADBEEF;
+    fwrite(&magic_number, sizeof(magic_number), 1, output_file);
+    
+    // Write runtime type
+    fwrite(&config->runtime, sizeof(config->runtime), 1, output_file);
     
     fclose(output_file);
     
