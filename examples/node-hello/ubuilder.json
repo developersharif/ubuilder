@@ -1,0 +1,12 @@
+{
+  "name": "node-hello",
+  "version": "1.0.0",
+  "runtime": "node",
+  "entry_point": "main.js",
+  "description": "Simple Node.js Hello World application",
+  "dependencies": [],
+  "build": {
+    "compression": true,
+    "gui": false
+  }
+}

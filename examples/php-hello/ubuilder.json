@@ -1,0 +1,12 @@
+{
+  "name": "php-hello",
+  "version": "1.0.0",
+  "runtime": "php",
+  "entry_point": "main.php",
+  "description": "Simple PHP Hello World application",
+  "dependencies": [],
+  "build": {
+    "compression": true,
+    "gui": false
+  }
+}

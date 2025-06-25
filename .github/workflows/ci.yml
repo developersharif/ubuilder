@@ -1,0 +1,82 @@
+name: UBuilder CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential zlib1g-dev
+
+      - name: Build UBuilder
+        run: |
+          chmod +x build-system/build.sh
+          ./build-system/build.sh
+
+      - name: Run tests
+        run: |
+          cd build
+          make test
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ubuilder-linux
+          path: dist/bin/ubuilder
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build UBuilder
+        run: |
+          .\build-system\build.bat
+
+      - name: Run tests
+        run: |
+          cd build
+          cmake --build . --target test
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ubuilder-windows
+          path: dist/bin/ubuilder.exe
+
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          brew install cmake zlib
+
+      - name: Build UBuilder
+        run: |
+          chmod +x build-system/build.sh
+          ./build-system/build.sh
+
+      - name: Run tests
+        run: |
+          cd build
+          make test
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ubuilder-macos
+          path: dist/bin/ubuilder

@@ -1,0 +1,12 @@
+{
+  "name": "python-hello",
+  "version": "1.0.0",
+  "runtime": "python",
+  "entry_point": "main.py",
+  "description": "Simple Python Hello World application",
+  "dependencies": [],
+  "build": {
+    "compression": true,
+    "gui": false
+  }
+}
