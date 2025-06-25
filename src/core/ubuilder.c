@@ -10,7 +10,15 @@
 #ifdef PLATFORM_WINDOWS
     #include <windows.h>
     #include <direct.h>
+    #include <process.h>
+    #include <io.h>
     #define mkdir(path, mode) _mkdir(path)
+    #define getpid _getpid
+    #define chdir _chdir
+    #define getcwd _getcwd
+    #define unlink _unlink
+    #define rmdir _rmdir
+    #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
 #else
     #include <unistd.h>
     #include <sys/types.h>

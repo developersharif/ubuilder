@@ -4,7 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <dirent.h>
+
+#ifdef PLATFORM_WINDOWS
+    #include <windows.h>
+    #include <io.h>
+    #define PATH_MAX MAX_PATH
+    #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+    #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#else
+    #include <dirent.h>
+    #include <unistd.h>
+#endif
 
 // Forward declarations
 static ub_result_t php_embed_extensions(FILE* output_file);
@@ -151,6 +161,37 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
 
 // Helper function to embed all PHP files recursively
 static ub_result_t php_embed_files_recursive(const char* dir_path, const char* base_path, FILE* output_file) {
+#ifdef PLATFORM_WINDOWS
+    WIN32_FIND_DATAA find_data;
+    HANDLE find_handle;
+    char search_path[1024];
+    
+    snprintf(search_path, sizeof(search_path), "%s\\*", dir_path);
+    find_handle = FindFirstFileA(search_path, &find_data);
+    
+    if (find_handle == INVALID_HANDLE_VALUE) {
+        return UB_ERROR_FILE_NOT_FOUND;
+    }
+    
+    do {
+        if (strcmp(find_data.cFileName, ".") == 0 || strcmp(find_data.cFileName, "..") == 0) {
+            continue;
+        }
+        
+        char full_path[1024];
+        snprintf(full_path, sizeof(full_path), "%s\\%s", dir_path, find_data.cFileName);
+        
+        if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            // Recursively process subdirectory
+            php_embed_files_recursive(full_path, base_path, output_file);
+        } else {
+            // Check if it's a PHP file or other relevant file
+            const char* ext = strrchr(find_data.cFileName, '.');
+            if (ext && (strcmp(ext, ".php") == 0 || strcmp(ext, ".json") == 0 || strcmp(ext, ".txt") == 0)) {
+                // Calculate relative path from project root
+                const char* rel_path = full_path + strlen(base_path);
+                if (*rel_path == '\\') rel_path++; // Skip leading backslash
+#else
     DIR* dir = opendir(dir_path);
     if (!dir) {
         return UB_ERROR_FILE_NOT_FOUND;
@@ -180,6 +221,7 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
                 // Calculate relative path from project root
                 const char* rel_path = full_path + strlen(base_path);
                 if (*rel_path == '/') rel_path++; // Skip leading slash
+#endif
                 
                 // Write file metadata: relative path length and content
                 uint32_t path_len = strlen(rel_path);
@@ -189,7 +231,14 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
                 // Write file content
                 FILE* file = fopen(full_path, "rb");
                 if (file) {
+#ifdef PLATFORM_WINDOWS
+                    // Get file size on Windows
+                    fseek(file, 0, SEEK_END);
+                    uint32_t file_size = ftell(file);
+                    fseek(file, 0, SEEK_SET);
+#else
                     uint32_t file_size = st.st_size;
+#endif
                     fwrite(&file_size, sizeof(file_size), 1, output_file);
                     
                     char buffer[8192];
@@ -201,9 +250,15 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
                 }
             }
         }
+#ifdef PLATFORM_WINDOWS
+    } while (FindNextFileA(find_handle, &find_data));
+    
+    FindClose(find_handle);
+#else
     }
     
     closedir(dir);
+#endif
     return UB_SUCCESS;
 }
 

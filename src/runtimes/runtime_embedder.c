@@ -1,14 +1,20 @@
 #include "runtime_embedder.h"
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
 
 #ifdef PLATFORM_WINDOWS
     #include <windows.h>
+    #include <io.h>
+    #include <direct.h>
     #define popen _popen
     #define pclose _pclose
+    #define access _access
+    #define mkdir(path, mode) _mkdir(path)
+    #define readlink(path, buf, size) (-1)  // Not available on Windows
+#else
+    #include <unistd.h>
 #endif
 
 // Function to execute a command and capture output
