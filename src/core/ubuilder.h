@@ -1,6 +1,11 @@
 #ifndef UBUILDER_CORE_H
 #define UBUILDER_CORE_H
 
+// Suppress MSVC security warnings for standard C functions
+#ifdef _MSC_VER
+    #define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -15,13 +20,19 @@ extern "C" {
 
 // Platform definitions
 #ifdef _WIN32
-    #define PLATFORM_WINDOWS
+    #ifndef PLATFORM_WINDOWS
+        #define PLATFORM_WINDOWS
+    #endif
     #define PATH_SEPARATOR "\\"
 #elif defined(__APPLE__)
-    #define PLATFORM_MACOS
+    #ifndef PLATFORM_MACOS
+        #define PLATFORM_MACOS
+    #endif
     #define PATH_SEPARATOR "/"
 #else
-    #define PLATFORM_LINUX
+    #ifndef PLATFORM_LINUX
+        #define PLATFORM_LINUX
+    #endif
     #define PATH_SEPARATOR "/"
 #endif
 
