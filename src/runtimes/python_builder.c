@@ -37,6 +37,12 @@ static ub_result_t python_validate_project(const char* project_dir) {
 }
 
 // Embed Python runtime (minimal embedded Python)
+// Forward declarations
+#ifdef PLATFORM_WINDOWS
+static ub_result_t python_embed_windows_runtime(const char* python_dir, FILE* output_file);
+#endif
+
+// Embed Python runtime
 static ub_result_t python_embed_runtime(FILE* output_file) {
     ub_runtime_info_t runtime_info;
     ub_result_t result;
@@ -50,10 +56,39 @@ static ub_result_t python_embed_runtime(FILE* output_file) {
     
     printf("Embedding Python runtime: %s\n", runtime_info.binary_path);
     printf("Python version: %s\n", runtime_info.version_string ? runtime_info.version_string : "unknown");
+
+#ifdef PLATFORM_WINDOWS
+    // On Windows, we need to embed the entire Python directory structure
+    // Extract the directory from python.exe path
+    char python_dir[1024];
+    strcpy(python_dir, runtime_info.binary_path);
+    char* last_slash = strrchr(python_dir, '\\');
+    if (last_slash) {
+        *last_slash = '\0';
+    } else {
+        fprintf(stderr, "Error: Invalid Python binary path format\n");
+        ub_runtime_info_cleanup(&runtime_info);
+        return UB_ERROR_INVALID_ARGS;
+    }
+    
+    printf("Python directory: %s\n", python_dir);
+    
+    // Embed the complete Windows Python runtime
+    result = python_embed_windows_runtime(python_dir, output_file);
+    if (result != UB_SUCCESS) {
+        ub_runtime_info_cleanup(&runtime_info);
+        return result;
+    }
+#else
+    // On Unix-like systems, embed just the Python binary
     printf("Binary size: %.2f MB\n", runtime_info.binary_size / (1024.0 * 1024.0));
     
-    // Embed the actual Python binary
     result = ub_embed_runtime_binary(runtime_info.binary_path, output_file);
+    if (result != UB_SUCCESS) {
+        ub_runtime_info_cleanup(&runtime_info);
+        return result;
+    }
+#endif
     
     // Cleanup
     ub_runtime_info_cleanup(&runtime_info);
@@ -232,3 +267,183 @@ const ub_runtime_builder_t python_builder = {
     .required_files = python_required_files,
     .supported_extensions = python_supported_extensions
 };
+
+#ifdef PLATFORM_WINDOWS
+// Function to embed Windows Python runtime (multiple files format)
+static ub_result_t python_embed_windows_runtime(const char* python_dir, FILE* output_file) {
+    // Essential files needed for Python to run on Windows
+    const char* essential_files[] = {
+        "python.exe",
+        "pythonw.exe",         // Windows version (if exists)
+        "python39.dll",        // Python 3.9 DLL (adjust version as needed)
+        "python310.dll",       // Python 3.10 DLL
+        "python311.dll",       // Python 3.11 DLL
+        "python312.dll",       // Python 3.12 DLL
+        "python313.dll",       // Python 3.13 DLL
+        "vcruntime140.dll",    // Visual C++ runtime
+        "vcruntime140_1.dll",  // Additional VC runtime
+        "msvcp140.dll",        // Microsoft Visual C++ runtime
+        NULL
+    };
+    
+    printf("Embedding Windows Python runtime from: %s\n", python_dir);
+    
+    size_t total_size = 0;
+    int files_embedded = 0;
+    
+    // First, embed essential core files
+    for (int i = 0; essential_files[i]; i++) {
+        char file_path[1024];
+        snprintf(file_path, sizeof(file_path), "%s\\%s", python_dir, essential_files[i]);
+        
+        struct stat st;
+        if (stat(file_path, &st) == 0) {
+            FILE* file = fopen(file_path, "rb");
+            if (file) {
+                // Write filename length and name
+                uint32_t name_len = (uint32_t)strlen(essential_files[i]);
+                fwrite(&name_len, sizeof(name_len), 1, output_file);
+                fwrite(essential_files[i], 1, name_len, output_file);
+                
+                // Write file size
+                uint32_t file_size = (uint32_t)st.st_size;
+                fwrite(&file_size, sizeof(file_size), 1, output_file);
+                
+                // Write file content
+                char buffer[8192];
+                size_t bytes_read;
+                while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+                    fwrite(buffer, 1, bytes_read, output_file);
+                }
+                
+                fclose(file);
+                total_size += st.st_size;
+                files_embedded++;
+            }
+        } else if (strcmp(essential_files[i], "python.exe") == 0) {
+            // python.exe is required
+            printf("  Warning: Required file not found: %s\n", file_path);
+        }
+    }
+    
+    // Try to embed Python standard library (Lib directory) - more comprehensive
+    char lib_dir[1024];
+    snprintf(lib_dir, sizeof(lib_dir), "%s\\Lib", python_dir);
+    
+    struct stat lib_stat;
+    if (stat(lib_dir, &lib_stat) == 0) {
+        // Essential standard library modules needed for basic Python operation
+        const char* essential_lib_files[] = {
+            "Lib\\encodings\\__init__.py",
+            "Lib\\encodings\\utf_8.py",
+            "Lib\\encodings\\cp1252.py",
+            "Lib\\encodings\\latin_1.py",
+            "Lib\\encodings\\ascii.py",
+            "Lib\\codecs.py",
+            "Lib\\os.py",
+            "Lib\\sys.py",
+            "Lib\\io.py", 
+            "Lib\\_collections_abc.py",
+            "Lib\\abc.py",
+            "Lib\\types.py",
+            "Lib\\functools.py",
+            "Lib\\operator.py",
+            "Lib\\keyword.py",
+            "Lib\\heapq.py",
+            "Lib\\reprlib.py",
+            "Lib\\collections\\__init__.py",
+            "Lib\\json\\__init__.py",
+            "Lib\\json\\decoder.py",
+            "Lib\\json\\encoder.py",
+            NULL
+        };
+        
+        for (int i = 0; essential_lib_files[i]; i++) {
+            char lib_file_path[1024];
+            snprintf(lib_file_path, sizeof(lib_file_path), "%s\\%s", python_dir, essential_lib_files[i]);
+            
+            struct stat st;
+            if (stat(lib_file_path, &st) == 0) {
+                FILE* lib_file = fopen(lib_file_path, "rb");
+                if (lib_file) {
+                    uint32_t name_len = (uint32_t)strlen(essential_lib_files[i]);
+                    fwrite(&name_len, sizeof(name_len), 1, output_file);
+                    fwrite(essential_lib_files[i], 1, name_len, output_file);
+                    
+                    uint32_t file_size = (uint32_t)st.st_size;
+                    fwrite(&file_size, sizeof(file_size), 1, output_file);
+                    
+                    char buffer[8192];
+                    size_t bytes_read;
+                    while ((bytes_read = fread(buffer, 1, sizeof(buffer), lib_file)) > 0) {
+                        fwrite(buffer, 1, bytes_read, output_file);
+                    }
+                    
+                    fclose(lib_file);
+                    total_size += st.st_size;
+                    files_embedded++;
+                }
+            }
+        }
+    }
+    
+    // Also embed any additional DLL dependencies
+    WIN32_FIND_DATAA find_data;
+    HANDLE find_handle;
+    char search_path[1024];
+    
+    snprintf(search_path, sizeof(search_path), "%s\\*.dll", python_dir);
+    find_handle = FindFirstFileA(search_path, &find_data);
+    
+    if (find_handle != INVALID_HANDLE_VALUE) {
+        do {
+            // Skip if this is already embedded as an essential file
+            int is_essential = 0;
+            for (int i = 0; essential_files[i]; i++) {
+                if (strcmp(find_data.cFileName, essential_files[i]) == 0) {
+                    is_essential = 1;
+                    break;
+                }
+            }
+            
+            if (!is_essential) {
+                char dll_path[1024];
+                snprintf(dll_path, sizeof(dll_path), "%s\\%s", python_dir, find_data.cFileName);
+                
+                struct stat st;
+                if (stat(dll_path, &st) == 0) {
+                    FILE* dll_file = fopen(dll_path, "rb");
+                    if (dll_file) {
+                        uint32_t name_len = (uint32_t)strlen(find_data.cFileName);
+                        fwrite(&name_len, sizeof(name_len), 1, output_file);
+                        fwrite(find_data.cFileName, 1, name_len, output_file);
+                        
+                        uint32_t file_size = (uint32_t)st.st_size;
+                        fwrite(&file_size, sizeof(file_size), 1, output_file);
+                        
+                        char buffer[8192];
+                        size_t bytes_read;
+                        while ((bytes_read = fread(buffer, 1, sizeof(buffer), dll_file)) > 0) {
+                            fwrite(buffer, 1, bytes_read, output_file);
+                        }
+                        
+                        fclose(dll_file);
+                        total_size += st.st_size;
+                        files_embedded++;
+                    }
+                }
+            }
+        } while (FindNextFileA(find_handle, &find_data));
+        FindClose(find_handle);
+    }
+    
+    // Write end marker (empty filename)
+    uint32_t end_marker = 0;
+    fwrite(&end_marker, sizeof(end_marker), 1, output_file);
+    
+    printf("Windows Python runtime embedded: %d files, %.2f MB total\n", 
+           files_embedded, total_size / (1024.0 * 1024.0));
+    
+    return UB_SUCCESS;
+}
+#endif

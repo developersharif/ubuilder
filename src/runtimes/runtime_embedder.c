@@ -142,7 +142,8 @@ ub_result_t ub_detect_runtime_binary(ub_runtime_type_t runtime, ub_runtime_info_
     switch (runtime) {
         case UB_RUNTIME_PHP:
 #ifdef PLATFORM_WINDOWS
-            // On Windows, try to get the actual PHP executable path
+            // On Windows, PHP requires multiple files: php.exe + php8ts.dll + dependencies
+            // First get the PHP directory from php.exe path
             which_cmd = "php -r \"echo PHP_BINARY;\"";
             version_cmd = "php --version";
 #else
@@ -460,3 +461,268 @@ void ub_runtime_info_cleanup(ub_runtime_info_t* info) {
     
     memset(info, 0, sizeof(ub_runtime_info_t));
 }
+
+#ifdef PLATFORM_WINDOWS
+// Function to extract Windows PHP runtime (multiple files format)
+ub_result_t ub_extract_windows_php_runtime(FILE* input_file, const char* temp_dir, char* extracted_path) {
+    if (!input_file || !temp_dir || !extracted_path) {
+        return UB_ERROR_INVALID_ARGS;
+    }
+    
+    int files_extracted = 0;
+    
+    while (1) {
+        uint32_t name_len;
+        
+        // Read filename length (0 means end of files)
+        if (fread(&name_len, sizeof(name_len), 1, input_file) != 1) {
+            break;
+        }
+        
+        if (name_len == 0) {
+            // End marker reached
+            break;
+        }
+        
+        // Read filename
+        char* filename = malloc(name_len + 1);
+        if (!filename) {
+            return UB_ERROR_MEMORY_ALLOCATION;
+        }
+        
+        if (fread(filename, 1, name_len, input_file) != name_len) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        filename[name_len] = '\0';
+        
+        // Read file size
+        uint32_t file_size;
+        if (fread(&file_size, sizeof(file_size), 1, input_file) != 1) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        
+        // Create full path
+        char full_path[1024];
+        snprintf(full_path, sizeof(full_path), "%s\\%s", temp_dir, filename);
+        
+        // Create directory structure if needed (for ext\*.dll files)
+        char* dir_path = strdup(full_path);
+        char* last_slash = strrchr(dir_path, '\\');
+        if (last_slash && last_slash != dir_path) {
+            *last_slash = '\0';
+            // Create directory recursively 
+            char mkdir_cmd[1024];
+            snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir \"%s\" 2>nul", dir_path);
+            system(mkdir_cmd);
+        }
+        free(dir_path);
+        
+        // Extract file
+        FILE* output_file = fopen(full_path, "wb");
+        if (!output_file) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        
+        char buffer[8192];
+        uint32_t remaining = file_size;
+        while (remaining > 0) {
+            size_t to_read = (remaining < sizeof(buffer)) ? remaining : sizeof(buffer);
+            size_t bytes_read = fread(buffer, 1, to_read, input_file);
+            if (bytes_read == 0) break;
+            fwrite(buffer, 1, bytes_read, output_file);
+            remaining -= (uint32_t)bytes_read;
+        }
+        fclose(output_file);
+        
+        // Remember php.exe path for execution
+        if (strcmp(filename, "php.exe") == 0) {
+            strcpy(extracted_path, full_path);
+        }
+        
+        free(filename);
+        files_extracted++;
+    }
+    
+    
+    if (files_extracted == 0) {
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+    
+    return UB_SUCCESS;
+}
+
+// Function to extract Windows Node.js runtime (multiple files format)
+ub_result_t ub_extract_windows_nodejs_runtime(FILE* input_file, const char* temp_dir, char* extracted_path) {
+    if (!input_file || !temp_dir || !extracted_path) {
+        return UB_ERROR_INVALID_ARGS;
+    }
+    
+    int files_extracted = 0;
+    
+    while (1) {
+        uint32_t name_len;
+        
+        // Read filename length (0 means end of files)
+        if (fread(&name_len, sizeof(name_len), 1, input_file) != 1) {
+            break;
+        }
+        
+        if (name_len == 0) {
+            // End marker reached
+            break;
+        }
+        
+        // Read filename
+        char* filename = malloc(name_len + 1);
+        if (!filename) {
+            return UB_ERROR_MEMORY_ALLOCATION;
+        }
+        
+        if (fread(filename, 1, name_len, input_file) != name_len) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        filename[name_len] = '\0';
+        
+        // Read file size
+        uint32_t file_size;
+        if (fread(&file_size, sizeof(file_size), 1, input_file) != 1) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        
+        // Create full path
+        char full_path[1024];
+        snprintf(full_path, sizeof(full_path), "%s\\%s", temp_dir, filename);
+        
+        // Extract file
+        FILE* output_file = fopen(full_path, "wb");
+        if (!output_file) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        
+        char buffer[8192];
+        uint32_t remaining = file_size;
+        while (remaining > 0) {
+            size_t to_read = (remaining < sizeof(buffer)) ? remaining : sizeof(buffer);
+            size_t bytes_read = fread(buffer, 1, to_read, input_file);
+            if (bytes_read == 0) break;
+            fwrite(buffer, 1, bytes_read, output_file);
+            remaining -= (uint32_t)bytes_read;
+        }
+        fclose(output_file);
+        
+        // Remember node.exe path for execution
+        if (strcmp(filename, "node.exe") == 0) {
+            strcpy(extracted_path, full_path);
+        }
+        
+        free(filename);
+        files_extracted++;
+    }
+    
+    printf("Windows Node.js runtime extraction complete: %d files\n", files_extracted);
+    
+    if (files_extracted == 0) {
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+    
+    return UB_SUCCESS;
+}
+
+// Function to extract Windows Python runtime (multiple files format)
+ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp_dir, char* extracted_path) {
+    if (!input_file || !temp_dir || !extracted_path) {
+        return UB_ERROR_INVALID_ARGS;
+    }
+    
+    int files_extracted = 0;
+    
+    while (1) {
+        uint32_t name_len;
+        
+        // Read filename length (0 means end of files)
+        if (fread(&name_len, sizeof(name_len), 1, input_file) != 1) {
+            break;
+        }
+        
+        if (name_len == 0) {
+            // End marker reached
+            break;
+        }
+        
+        // Read filename
+        char* filename = malloc(name_len + 1);
+        if (!filename) {
+            return UB_ERROR_MEMORY_ALLOCATION;
+        }
+        
+        if (fread(filename, 1, name_len, input_file) != name_len) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        filename[name_len] = '\0';
+        
+        // Read file size
+        uint32_t file_size;
+        if (fread(&file_size, sizeof(file_size), 1, input_file) != 1) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        
+        // Create full path, handling subdirectories (like Lib\*.py)
+        char full_path[1024];
+        snprintf(full_path, sizeof(full_path), "%s\\%s", temp_dir, filename);
+        
+        // Create directory structure if needed
+        char* dir_path = strdup(full_path);
+        char* last_slash = strrchr(dir_path, '\\');
+        if (last_slash && last_slash != dir_path) {
+            *last_slash = '\0';
+            // Create directory recursively 
+            char mkdir_cmd[1024];
+            snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir \"%s\" 2>nul", dir_path);
+            system(mkdir_cmd);
+        }
+        free(dir_path);
+        
+        // Extract file
+        FILE* output_file = fopen(full_path, "wb");
+        if (!output_file) {
+            free(filename);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        
+        char buffer[8192];
+        uint32_t remaining = file_size;
+        while (remaining > 0) {
+            size_t to_read = (remaining < sizeof(buffer)) ? remaining : sizeof(buffer);
+            size_t bytes_read = fread(buffer, 1, to_read, input_file);
+            if (bytes_read == 0) break;
+            fwrite(buffer, 1, bytes_read, output_file);
+            remaining -= (uint32_t)bytes_read;
+        }
+        fclose(output_file);
+        
+        // Remember python.exe path for execution
+        if (strcmp(filename, "python.exe") == 0) {
+            strcpy(extracted_path, full_path);
+        }
+        
+        free(filename);
+        files_extracted++;
+    }
+    
+    printf("Windows Python runtime extraction complete: %d files\n", files_extracted);
+    
+    if (files_extracted == 0) {
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+    
+    return UB_SUCCESS;
+}
+#endif

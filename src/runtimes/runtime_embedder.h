@@ -31,6 +31,13 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir);
 // Cleanup function
 void ub_runtime_info_cleanup(ub_runtime_info_t* info);
 
+#ifdef PLATFORM_WINDOWS
+// Windows-specific functions
+ub_result_t ub_extract_windows_php_runtime(FILE* input_file, const char* temp_dir, char* extracted_path);
+ub_result_t ub_extract_windows_nodejs_runtime(FILE* input_file, const char* temp_dir, char* extracted_path);
+ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp_dir, char* extracted_path);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

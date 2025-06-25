@@ -45,6 +45,11 @@ static ub_result_t nodejs_validate_project(const char* project_dir) {
     return UB_ERROR_FILE_NOT_FOUND;
 }
 
+// Forward declarations
+#ifdef PLATFORM_WINDOWS
+static ub_result_t nodejs_embed_windows_runtime(const char* nodejs_dir, FILE* output_file);
+#endif
+
 // Embed Node.js runtime
 static ub_result_t nodejs_embed_runtime(FILE* output_file) {
     ub_runtime_info_t runtime_info;
@@ -59,10 +64,39 @@ static ub_result_t nodejs_embed_runtime(FILE* output_file) {
     
     printf("Embedding Node.js runtime: %s\n", runtime_info.binary_path);
     printf("Node.js version: %s\n", runtime_info.version_string ? runtime_info.version_string : "unknown");
+
+#ifdef PLATFORM_WINDOWS
+    // On Windows, we need to embed the entire Node.js directory structure
+    // Extract the directory from node.exe path
+    char nodejs_dir[1024];
+    strcpy(nodejs_dir, runtime_info.binary_path);
+    char* last_slash = strrchr(nodejs_dir, '\\');
+    if (last_slash) {
+        *last_slash = '\0';
+    } else {
+        fprintf(stderr, "Error: Invalid Node.js binary path format\n");
+        ub_runtime_info_cleanup(&runtime_info);
+        return UB_ERROR_INVALID_ARGS;
+    }
+    
+    printf("Node.js directory: %s\n", nodejs_dir);
+    
+    // Embed the complete Windows Node.js runtime
+    result = nodejs_embed_windows_runtime(nodejs_dir, output_file);
+    if (result != UB_SUCCESS) {
+        ub_runtime_info_cleanup(&runtime_info);
+        return result;
+    }
+#else
+    // On Unix-like systems, embed just the Node.js binary
     printf("Binary size: %.2f MB\n", runtime_info.binary_size / (1024.0 * 1024.0));
     
-    // Embed the actual Node.js binary
     result = ub_embed_runtime_binary(runtime_info.binary_path, output_file);
+    if (result != UB_SUCCESS) {
+        ub_runtime_info_cleanup(&runtime_info);
+        return result;
+    }
+#endif
     
     // Cleanup
     ub_runtime_info_cleanup(&runtime_info);
@@ -241,3 +275,117 @@ const ub_runtime_builder_t nodejs_builder = {
     .required_files = nodejs_required_files,
     .supported_extensions = nodejs_supported_extensions
 };
+
+#ifdef PLATFORM_WINDOWS
+// Function to embed Windows Node.js runtime (multiple files format)
+static ub_result_t nodejs_embed_windows_runtime(const char* nodejs_dir, FILE* output_file) {
+    // Essential files needed for Node.js to run on Windows
+    const char* essential_files[] = {
+        "node.exe",
+        "node.dll",            // Main Node.js engine (if exists)
+        "node.lib",            // Node.js library (if exists)
+        "npm",                 // NPM executable (if exists)
+        "npm.cmd",             // NPM batch file
+        NULL
+    };
+    
+    printf("Embedding Windows Node.js runtime from: %s\n", nodejs_dir);
+    
+    size_t total_size = 0;
+    int files_embedded = 0;
+    
+    // First, embed essential core files
+    for (int i = 0; essential_files[i]; i++) {
+        char file_path[1024];
+        snprintf(file_path, sizeof(file_path), "%s\\%s", nodejs_dir, essential_files[i]);
+        
+        struct stat st;
+        if (stat(file_path, &st) == 0) {
+            FILE* file = fopen(file_path, "rb");
+            if (file) {
+                // Write filename length and name
+                uint32_t name_len = (uint32_t)strlen(essential_files[i]);
+                fwrite(&name_len, sizeof(name_len), 1, output_file);
+                fwrite(essential_files[i], 1, name_len, output_file);
+                
+                // Write file size
+                uint32_t file_size = (uint32_t)st.st_size;
+                fwrite(&file_size, sizeof(file_size), 1, output_file);
+                
+                // Write file content
+                char buffer[8192];
+                size_t bytes_read;
+                while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+                    fwrite(buffer, 1, bytes_read, output_file);
+                }
+                
+                fclose(file);
+                total_size += st.st_size;
+                files_embedded++;
+            }
+        } else if (strcmp(essential_files[i], "node.exe") == 0) {
+            // node.exe is required
+            printf("  Warning: Required file not found: %s\n", file_path);
+        }
+    }
+    
+    // Also try to embed any DLL dependencies in the same directory
+    WIN32_FIND_DATAA find_data;
+    HANDLE find_handle;
+    char search_path[1024];
+    
+    snprintf(search_path, sizeof(search_path), "%s\\*.dll", nodejs_dir);
+    find_handle = FindFirstFileA(search_path, &find_data);
+    
+    if (find_handle != INVALID_HANDLE_VALUE) {
+        do {
+            // Skip if this is already embedded as an essential file
+            int is_essential = 0;
+            for (int i = 0; essential_files[i]; i++) {
+                if (strcmp(find_data.cFileName, essential_files[i]) == 0) {
+                    is_essential = 1;
+                    break;
+                }
+            }
+            
+            if (!is_essential) {
+                char dll_path[1024];
+                snprintf(dll_path, sizeof(dll_path), "%s\\%s", nodejs_dir, find_data.cFileName);
+                
+                struct stat st;
+                if (stat(dll_path, &st) == 0) {
+                    FILE* dll_file = fopen(dll_path, "rb");
+                    if (dll_file) {
+                        uint32_t name_len = (uint32_t)strlen(find_data.cFileName);
+                        fwrite(&name_len, sizeof(name_len), 1, output_file);
+                        fwrite(find_data.cFileName, 1, name_len, output_file);
+                        
+                        uint32_t file_size = (uint32_t)st.st_size;
+                        fwrite(&file_size, sizeof(file_size), 1, output_file);
+                        
+                        char buffer[8192];
+                        size_t bytes_read;
+                        while ((bytes_read = fread(buffer, 1, sizeof(buffer), dll_file)) > 0) {
+                            fwrite(buffer, 1, bytes_read, output_file);
+                        }
+                        
+                        fclose(dll_file);
+                        total_size += st.st_size;
+                        files_embedded++;
+                    }
+                }
+            }
+        } while (FindNextFileA(find_handle, &find_data));
+        FindClose(find_handle);
+    }
+    
+    // Write end marker (empty filename)
+    uint32_t end_marker = 0;
+    fwrite(&end_marker, sizeof(end_marker), 1, output_file);
+    
+    printf("Windows Node.js runtime embedded: %d files, %.2f MB total\n", 
+           files_embedded, total_size / (1024.0 * 1024.0));
+    
+    return UB_SUCCESS;
+}
+#endif

@@ -582,14 +582,14 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, co
         if (last_slash) {
             *last_slash = '\0';
 #ifdef PLATFORM_WINDOWS
-            snprintf(extensions_dir, sizeof(extensions_dir), "%s\\extensions", runtime_dir);
+            snprintf(extensions_dir, sizeof(extensions_dir), "%s\\ext", runtime_dir);
             snprintf(php_ini_path, sizeof(php_ini_path), "%s\\php.ini", runtime_dir);
 #else
-            snprintf(extensions_dir, sizeof(extensions_dir), "%s/extensions", runtime_dir);
+            snprintf(extensions_dir, sizeof(extensions_dir), "%s/ext", runtime_dir);
             snprintf(php_ini_path, sizeof(php_ini_path), "%s/php.ini", runtime_dir);
 #endif
         } else {
-            strcpy(extensions_dir, "./extensions");
+            strcpy(extensions_dir, "./ext");
             strcpy(php_ini_path, "./php.ini");
         }
         
@@ -886,18 +886,38 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     }
     
     // Extract embedded runtime binary
+#ifdef PLATFORM_WINDOWS
+    if (runtime == UB_RUNTIME_PHP) {
+        // Windows PHP uses multiple files format
+        result = ub_extract_windows_php_runtime(data_file, temp_dir, runtime_binary_path);
+    } else if (runtime == UB_RUNTIME_NODEJS) {
+        // Windows Node.js uses multiple files format
+        result = ub_extract_windows_nodejs_runtime(data_file, temp_dir, runtime_binary_path);
+    } else if (runtime == UB_RUNTIME_PYTHON) {
+        // Windows Python uses multiple files format
+        result = ub_extract_windows_python_runtime(data_file, temp_dir, runtime_binary_path);
+    } else {
+        // Other runtimes use single binary format
+        result = ub_extract_runtime_binary(data_file, temp_dir, runtime_binary_path);
+    }
+#else
     result = ub_extract_runtime_binary(data_file, temp_dir, runtime_binary_path);
+#endif
     if (result != UB_SUCCESS) {
         return result;
     }
     
     // For PHP runtime, extract extensions and create custom php.ini
     if (runtime == UB_RUNTIME_PHP) {
+#ifdef PLATFORM_WINDOWS
+        // Windows PHP runtime already includes extensions, skip separate extraction
+#else
         result = ub_extract_php_extensions(data_file, temp_dir);
         if (result != UB_SUCCESS) {
             printf("Warning: Failed to extract PHP extensions, continuing...\n");
             // Continue anyway - the app might work without extensions
         }
+#endif
     }
     
     // Read file count placeholder (skip it for now)

@@ -2,9 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef PLATFORM_WINDOWS
 #include <getopt.h>
 
-// Command line options
+// Command line options for Unix/Linux
 static struct option long_options[] = {
     {"project-dir", required_argument, 0, 'p'},
     {"runtime", required_argument, 0, 'r'},
@@ -16,6 +18,7 @@ static struct option long_options[] = {
     {"version", no_argument, 0, 'V'},
     {0, 0, 0, 0}
 };
+#endif
 
 static void print_usage(const char* program_name) {
     printf("UBuilder - Universal Executable Framework\n");
@@ -41,12 +44,64 @@ static void print_version(void) {
 }
 
 static ub_result_t parse_arguments(int argc, char* argv[], ub_config_t* config) {
-    int option_index = 0;
-    int c;
-    
     // Initialize config with defaults
     memset(config, 0, sizeof(ub_config_t));
     config->runtime = UB_RUNTIME_UNKNOWN;
+    
+#ifdef PLATFORM_WINDOWS
+    // Windows-compatible argument parsing
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--project-dir") == 0 || strcmp(argv[i], "-p") == 0) {
+            if (i + 1 < argc) {
+                config->project_dir = strdup(argv[++i]);
+            } else {
+                fprintf(stderr, "Error: --project-dir requires an argument\n");
+                return UB_ERROR_INVALID_ARGS;
+            }
+        } else if (strcmp(argv[i], "--runtime") == 0 || strcmp(argv[i], "-r") == 0) {
+            if (i + 1 < argc) {
+                config->runtime = ub_parse_runtime(argv[++i]);
+                if (config->runtime == UB_RUNTIME_UNKNOWN) {
+                    fprintf(stderr, "Error: Unknown runtime '%s'\n", argv[i]);
+                    return UB_ERROR_INVALID_ARGS;
+                }
+            } else {
+                fprintf(stderr, "Error: --runtime requires an argument\n");
+                return UB_ERROR_INVALID_ARGS;
+            }
+        } else if (strcmp(argv[i], "--output") == 0 || strcmp(argv[i], "-o") == 0) {
+            if (i + 1 < argc) {
+                config->output_path = strdup(argv[++i]);
+            } else {
+                fprintf(stderr, "Error: --output requires an argument\n");
+                return UB_ERROR_INVALID_ARGS;
+            }
+        } else if (strcmp(argv[i], "--entry-point") == 0 || strcmp(argv[i], "-e") == 0) {
+            if (i + 1 < argc) {
+                config->entry_point = strdup(argv[++i]);
+            } else {
+                fprintf(stderr, "Error: --entry-point requires an argument\n");
+                return UB_ERROR_INVALID_ARGS;
+            }
+        } else if (strcmp(argv[i], "--gui") == 0 || strcmp(argv[i], "-g") == 0) {
+            config->enable_gui = 1;
+        } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
+            config->verbose = 1;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            print_usage(argv[0]);
+            return UB_ERROR_INVALID_ARGS; // Exit after help
+        } else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
+            print_version();
+            return UB_ERROR_INVALID_ARGS; // Exit after version
+        } else {
+            fprintf(stderr, "Error: Unknown option '%s'\n", argv[i]);
+            return UB_ERROR_INVALID_ARGS;
+        }
+    }
+#else
+    // Unix/Linux getopt-based parsing
+    int option_index = 0;
+    int c;
     
     while ((c = getopt_long(argc, argv, "p:r:o:e:gvhV", long_options, &option_index)) != -1) {
         switch (c) {
@@ -84,6 +139,7 @@ static ub_result_t parse_arguments(int argc, char* argv[], ub_config_t* config) 
                 break;
         }
     }
+#endif
     
     // Validate required arguments
     if (!config->project_dir) {
