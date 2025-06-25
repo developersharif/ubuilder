@@ -357,6 +357,23 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     return UB_ERROR_RUNTIME_NOT_FOUND;
 }
 
+// Function to get cross-platform temporary directory
+static const char* get_temp_dir(void) {
+    const char* temp_dir = NULL;
+    
+#ifdef PLATFORM_WINDOWS
+    temp_dir = getenv("TEMP");
+    if (!temp_dir) temp_dir = getenv("TMP");
+    if (!temp_dir) temp_dir = "C:\\temp";
+#else
+    temp_dir = getenv("TMPDIR");
+    if (!temp_dir) temp_dir = getenv("TMP");
+    if (!temp_dir) temp_dir = "/tmp";
+#endif
+    
+    return temp_dir;
+}
+
 // Function to execute embedded application
 static ub_result_t ub_execute_embedded_app(ub_runtime_type_t runtime, const char* script_content, 
                                           const char* entry_point, int argc, char* argv[]) {
@@ -367,7 +384,8 @@ static ub_result_t ub_execute_embedded_app(ub_runtime_type_t runtime, const char
     int exit_code;
     
     // Create temporary directory
-    snprintf(temp_dir, sizeof(temp_dir), "/tmp/ubuilder-%d", getpid());
+    const char* base_temp_dir = get_temp_dir();
+    snprintf(temp_dir, sizeof(temp_dir), "%s/ubuilder-%d", base_temp_dir, getpid());
     if (mkdir(temp_dir, 0755) != 0 && errno != EEXIST) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
@@ -790,7 +808,8 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     ub_result_t result;
     
     // Create temporary directory
-    snprintf(temp_dir, sizeof(temp_dir), "/tmp/ubuilder-%d", getpid());
+    const char* base_temp_dir = get_temp_dir();
+    snprintf(temp_dir, sizeof(temp_dir), "%s/ubuilder-%d", base_temp_dir, getpid());
     if (mkdir(temp_dir, 0755) != 0 && errno != EEXIST) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
