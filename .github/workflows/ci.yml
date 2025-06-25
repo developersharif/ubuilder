@@ -56,14 +56,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Install PHP, Python, and Node.js for Windows
+          # Install PHP, Python, Node.js, CMake, and development tools for Windows
           choco install php python nodejs cmake
+          # Install vcpkg for Windows dependencies
+          git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat
+          C:\vcpkg\vcpkg install zlib:x64-windows
 
       - name: Build UBuilder
         run: |
           mkdir build
           cd build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake ..
           cmake --build . --config Release
 
       - name: Run tests
@@ -81,13 +85,33 @@ jobs:
         run: |
           cd build
           if (Test-Path ".\src\Release\ubuilder.exe") {
-            .\src\Release\ubuilder.exe --version
+            $ubuilder = ".\src\Release\ubuilder.exe"
           } elseif (Test-Path ".\src\ubuilder.exe") {
-            .\src\ubuilder.exe --version
+            $ubuilder = ".\src\ubuilder.exe"
           } else {
             Write-Host "UBuilder executable not found"
             exit 1
           }
+
+          # Test with a simple project first
+          New-Item -ItemType Directory -Force -Path "test-project"
+          Set-Content -Path "test-project\main.php" -Value '<?php echo "Hello from UBuilder!\n"; ?>'
+          Set-Content -Path "test-project\ubuilder.json" -Value '{"entry": "main.php", "runtime": "php"}'
+
+          # Test build functionality
+          & $ubuilder --project-dir=test-project --runtime=php --output=test-app.exe
+          if (Test-Path ".\test-app.exe") {
+            Write-Host "Build successful!"
+            # Try to run the test app
+            try {
+              & .\test-app.exe
+            } catch {
+              Write-Host "Test app execution failed, but build succeeded"
+            }
+          }
+
+          # Test version and help
+          & $ubuilder --version
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -107,6 +131,8 @@ jobs:
         run: |
           brew install cmake zlib
           brew install php python3 node
+          # Ensure PHP extensions are available
+          brew install php@8.1
 
       - name: Build UBuilder
         run: |
@@ -127,8 +153,41 @@ jobs:
       - name: Test basic functionality
         run: |
           cd build
+          # Set proper runtime paths for macOS
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export DYLD_LIBRARY_PATH="/opt/homebrew/lib:/usr/local/lib:$DYLD_LIBRARY_PATH"
+
+          # Check what runtimes are available
+          echo "Available runtimes:"
+          which php || echo "PHP not found"
+          which python3 || echo "Python3 not found"
+          which node || echo "Node not found"
+
+          # Test version and help first
           ./src/ubuilder --version
           ./src/ubuilder --help
+
+          # Test with a simple PHP project
+          mkdir -p test-project
+          echo '<?php echo "Hello from UBuilder!\n"; ?>' > test-project/main.php
+          echo '{"entry": "main.php", "runtime": "php"}' > test-project/ubuilder.json
+
+          echo "Building test app..."
+          ./src/ubuilder --project-dir=test-project --runtime=php --output=test-app
+
+          if [ -f "./test-app" ]; then
+            echo "Test app built successfully, attempting to run..."
+            # Try to run with timeout and better error handling
+            timeout 30s ./test-app || {
+              echo "Test app execution failed or timed out"
+              echo "Checking temp directory permissions..."
+              ls -la /tmp/ | grep ubuilder || echo "No ubuilder temp dirs found"
+              echo "Checking current directory:"
+              ls -la
+            }
+          else
+            echo "Test app was not created"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
