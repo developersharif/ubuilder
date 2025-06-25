@@ -256,6 +256,22 @@ ub_result_t ub_execute_application(const char* temp_dir, const char* entry_point
 
 // Function to check if current executable is a UBuilder app and run it
 ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
+    // Quick check: if we have obvious CLI arguments, skip embedded app detection
+    if (argc > 1) {
+        for (int i = 1; i < argc; i++) {
+            if (argv[i] && (
+                strstr(argv[i], "--version") || 
+                strstr(argv[i], "--help") || 
+                strstr(argv[i], "--project-dir") ||
+                strstr(argv[i], "--runtime") ||
+                strstr(argv[i], "--output") ||
+                argv[i][0] == '-')) {
+                // This looks like a CLI invocation, not an embedded app
+                return UB_ERROR_RUNTIME_NOT_FOUND;
+            }
+        }
+    }
+    
     FILE* self_file;
     char old_marker[] = "UBUILDER_DATA_MARKER";
     char modular_marker[] = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";  // More unique marker
@@ -296,15 +312,14 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     long file_size = ftell(self_file);
     
     // Check if file is too small to contain any markers
-    if (file_size < (long)strlen(modular_marker)) {
+    if (file_size < (long)strlen(modular_marker) + 100) {  // Need at least marker + some data
         fclose(self_file);
         return UB_ERROR_RUNTIME_NOT_FOUND;
     }
     
     // First try to find the new modular marker 
-    // For true runtime embedding, search through more of the file since
-    // the marker might be followed by large runtime binaries
-    long search_size = 64 * 1024; // Search last 64KB instead of 1KB
+    // For true runtime embedding, search only the last 1KB to avoid false positives
+    long search_size = 1024; // Search last 1KB only
     long search_start = file_size - search_size;
     if (search_start < 0) search_start = 0;
     
@@ -345,48 +360,6 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
                     return result;
                 }
             }
-        }
-    }
-    
-    // If not found in the end, search from the beginning
-    // This handles cases where the marker is early in the file due to large embedded runtimes
-    if (file_size > search_size) {
-        fseek(self_file, 0, SEEK_SET);
-        char* full_search_buffer = malloc(file_size);
-        if (full_search_buffer) {
-            size_t full_bytes_read = fread(full_search_buffer, 1, file_size, self_file);
-            
-            // Look for modular marker in full file
-            for (size_t i = 0; i <= full_bytes_read - strlen(modular_marker); i++) {
-                if (memcmp(full_search_buffer + i, modular_marker, strlen(modular_marker)) == 0) {
-                    // Found modular marker, try to read magic number and runtime type
-                    size_t magic_pos = i + strlen(modular_marker);
-                    size_t runtime_pos = magic_pos + sizeof(uint32_t);
-                    
-                    if (runtime_pos + sizeof(runtime) <= full_bytes_read) {
-                        // Check magic number
-                        uint32_t magic_number;
-                        memcpy(&magic_number, full_search_buffer + magic_pos, sizeof(magic_number));
-                        if (magic_number != 0xDEADBEEF) {
-                            continue; // Not a valid embedded app
-                        }
-                        
-                        memcpy(&runtime, full_search_buffer + runtime_pos, sizeof(runtime));
-                        
-                        // Verify this is a valid runtime type
-                        if (runtime >= UB_RUNTIME_PYTHON && runtime <= UB_RUNTIME_NODEJS) {
-                            // Set file position to start of embedded data
-                            fseek(self_file, runtime_pos + sizeof(runtime), SEEK_SET);
-                            result = ub_run_modular_embedded_app(runtime, self_file, argc, argv);
-                            free(full_search_buffer);
-                            free(search_buffer);
-                            fclose(self_file);
-                            return result;
-                        }
-                    }
-                }
-            }
-            free(full_search_buffer);
         }
     }
     
