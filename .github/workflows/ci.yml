@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -43,7 +43,7 @@ jobs:
           ./src/ubuilder --help
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ubuilder-linux
           path: build/src/ubuilder
@@ -52,7 +52,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -90,16 +90,18 @@ jobs:
           }
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ubuilder-windows
-          path: build\src\Release\ubuilder.exe
+          path: |
+            build/src/Release/ubuilder.exe
+            build/src/ubuilder.exe
 
   build-macos:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -129,7 +131,7 @@ jobs:
           ./src/ubuilder --help
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ubuilder-macos
           path: build/src/ubuilder
