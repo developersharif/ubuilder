@@ -258,7 +258,7 @@ ub_result_t ub_execute_application(const char* temp_dir, const char* entry_point
 ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     FILE* self_file;
     char old_marker[] = "UBUILDER_DATA_MARKER";
-    char modular_marker[] = "UBUILDER_MODULAR_MARKER";
+    char modular_marker[] = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";  // More unique marker
     char buffer[32];
     ub_runtime_type_t runtime;
     ub_result_t result = UB_ERROR_RUNTIME_NOT_FOUND;
@@ -321,9 +321,18 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     // Look for modular marker
     for (size_t i = 0; i <= bytes_read - strlen(modular_marker); i++) {
         if (memcmp(search_buffer + i, modular_marker, strlen(modular_marker)) == 0) {
-            // Found modular marker, try to read runtime type
-            size_t runtime_pos = i + strlen(modular_marker);
+            // Found modular marker, try to read magic number and runtime type
+            size_t magic_pos = i + strlen(modular_marker);
+            size_t runtime_pos = magic_pos + sizeof(uint32_t);
+            
             if (runtime_pos + sizeof(runtime) <= bytes_read) {
+                // Check magic number
+                uint32_t magic_number;
+                memcpy(&magic_number, search_buffer + magic_pos, sizeof(magic_number));
+                if (magic_number != 0xDEADBEEF) {
+                    continue; // Not a valid embedded app
+                }
+                
                 memcpy(&runtime, search_buffer + runtime_pos, sizeof(runtime));
                 
                 // Verify this is a valid runtime type
@@ -350,9 +359,18 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
             // Look for modular marker in full file
             for (size_t i = 0; i <= full_bytes_read - strlen(modular_marker); i++) {
                 if (memcmp(full_search_buffer + i, modular_marker, strlen(modular_marker)) == 0) {
-                    // Found modular marker, try to read runtime type
-                    size_t runtime_pos = i + strlen(modular_marker);
+                    // Found modular marker, try to read magic number and runtime type
+                    size_t magic_pos = i + strlen(modular_marker);
+                    size_t runtime_pos = magic_pos + sizeof(uint32_t);
+                    
                     if (runtime_pos + sizeof(runtime) <= full_bytes_read) {
+                        // Check magic number
+                        uint32_t magic_number;
+                        memcpy(&magic_number, full_search_buffer + magic_pos, sizeof(magic_number));
+                        if (magic_number != 0xDEADBEEF) {
+                            continue; // Not a valid embedded app
+                        }
+                        
                         memcpy(&runtime, full_search_buffer + runtime_pos, sizeof(runtime));
                         
                         // Verify this is a valid runtime type
@@ -821,8 +839,12 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
     }
     
     // Write modular runtime marker
-    const char* modular_marker = "UBUILDER_MODULAR_MARKER";
+    const char* modular_marker = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";
     fwrite(modular_marker, 1, strlen(modular_marker), output_file);
+    
+    // Write magic number for validation
+    uint32_t magic_number = 0xDEADBEEF;
+    fwrite(&magic_number, sizeof(magic_number), 1, output_file);
     
     // Write runtime type
     fwrite(&config->runtime, sizeof(config->runtime), 1, output_file);
