@@ -11,6 +11,8 @@
     #define PATH_MAX MAX_PATH
     #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
     #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+    #define popen _popen
+    #define pclose _pclose
 #else
     #include <dirent.h>
     #include <unistd.h>
@@ -105,14 +107,18 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
     } else {
         if (php_config) pclose(php_config);
         // Fallback to common paths
+#ifdef PLATFORM_WINDOWS
+        strcpy_s(ext_dir, sizeof(ext_dir), "C:\\php\\ext");
+#else
         strcpy(ext_dir, "/usr/lib/php/20240924");
+#endif
     }
     
     printf("Embedding PHP extensions from: %s\n", ext_dir);
     
     // Write marker for extension section
     const char* ext_marker = "PHP_EXTENSIONS_START";
-    uint32_t marker_len = strlen(ext_marker);
+    uint32_t marker_len = (uint32_t)strlen(ext_marker);
     fwrite(&marker_len, sizeof(marker_len), 1, output_file);
     fwrite(ext_marker, 1, marker_len, output_file);
     
@@ -128,7 +134,7 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
             FILE* ext_file = fopen(ext_path, "rb");
             if (ext_file) {
                 // Write extension filename length and name
-                uint32_t name_len = strlen(essential_extensions[i]);
+                uint32_t name_len = (uint32_t)strlen(essential_extensions[i]);
                 fwrite(&name_len, sizeof(name_len), 1, output_file);
                 fwrite(essential_extensions[i], 1, name_len, output_file);
                 
@@ -224,7 +230,7 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
 #endif
                 
                 // Write file metadata: relative path length and content
-                uint32_t path_len = strlen(rel_path);
+                uint32_t path_len = (uint32_t)strlen(rel_path);
                 fwrite(&path_len, sizeof(path_len), 1, output_file);
                 fwrite(rel_path, 1, path_len, output_file);
                 
@@ -273,7 +279,9 @@ static ub_result_t php_embed_application(const char* project_dir, FILE* output_f
     
     // Write number of files marker (we'll update this later if needed)
     uint32_t file_count_placeholder = 0;
+    (void)file_count_placeholder; // Suppress unused warning
     long file_count_pos = ftell(output_file);
+    (void)file_count_pos; // Suppress unused warning
     fwrite(&file_count_placeholder, sizeof(file_count_placeholder), 1, output_file);
     
     // Embed all PHP and related files recursively
@@ -294,7 +302,7 @@ static ub_result_t php_generate_launcher(FILE* output_file) {
         "// Launcher code will be here\n"
         "?>\n";
     
-    uint32_t code_size = strlen(launcher_code);
+    uint32_t code_size = (uint32_t)strlen(launcher_code);
     fwrite(&code_size, sizeof(code_size), 1, output_file);
     fwrite(launcher_code, 1, code_size, output_file);
     

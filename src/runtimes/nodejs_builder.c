@@ -11,6 +11,8 @@
     #define PATH_MAX MAX_PATH
     #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
     #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+    #define popen _popen
+    #define pclose _pclose
 #else
     #include <dirent.h>
     #include <unistd.h>
@@ -133,7 +135,7 @@ static ub_result_t nodejs_embed_files_recursive(const char* dir_path, const char
 #endif
                 
                 // Write file metadata: relative path length and content
-                uint32_t path_len = strlen(rel_path);
+                uint32_t path_len = (uint32_t)strlen(rel_path);
                 fwrite(&path_len, sizeof(path_len), 1, output_file);
                 fwrite(rel_path, 1, path_len, output_file);
                 
@@ -182,7 +184,9 @@ static ub_result_t nodejs_embed_application(const char* project_dir, FILE* outpu
     
     // Write number of files marker (we'll update this later if needed)
     uint32_t file_count_placeholder = 0;
+    (void)file_count_placeholder; // Suppress unused warning
     long file_count_pos = ftell(output_file);
+    (void)file_count_pos; // Suppress unused warning
     fwrite(&file_count_placeholder, sizeof(file_count_placeholder), 1, output_file);
     
     // Embed all Node.js and related files recursively
@@ -203,7 +207,7 @@ static ub_result_t nodejs_generate_launcher(FILE* output_file) {
         "const path = require('path');\n"
         "// Launcher code will be here\n";
     
-    uint32_t code_size = strlen(launcher_code);
+    uint32_t code_size = (uint32_t)strlen(launcher_code);
     fwrite(&code_size, sizeof(code_size), 1, output_file);
     fwrite(launcher_code, 1, code_size, output_file);
     
