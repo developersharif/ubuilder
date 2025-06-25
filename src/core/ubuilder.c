@@ -144,13 +144,14 @@ static ub_result_t create_directory_recursive(const char* path) {
     
     char* p = path_copy;
     
-    // Skip leading slash on Unix systems
-    if (*p == '/') {
-        p++;
+#ifdef PLATFORM_WINDOWS
+    // Skip drive letter on Windows (e.g., "C:")
+    if (strlen(p) > 2 && p[1] == ':') {
+        p += 3; // Skip "C:\"
     }
     
     while (*p) {
-        char* next_sep = strchr(p, PATH_SEPARATOR[0]);
+        char* next_sep = strchr(p, '\\');
         if (next_sep) {
             *next_sep = '\0';
         }
@@ -161,12 +162,37 @@ static ub_result_t create_directory_recursive(const char* path) {
         }
         
         if (next_sep) {
-            *next_sep = PATH_SEPARATOR[0];
+            *next_sep = '\\';
             p = next_sep + 1;
         } else {
             break;
         }
     }
+#else
+    // Skip leading slash on Unix systems
+    if (*p == '/') {
+        p++;
+    }
+    
+    while (*p) {
+        char* next_sep = strchr(p, '/');
+        if (next_sep) {
+            *next_sep = '\0';
+        }
+        
+        if (mkdir(path_copy, 0755) != 0 && errno != EEXIST) {
+            free(path_copy);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        
+        if (next_sep) {
+            *next_sep = '/';
+            p = next_sep + 1;
+        } else {
+            break;
+        }
+    }
+#endif
     
     free(path_copy);
     return UB_SUCCESS;
@@ -382,7 +408,6 @@ static const char* get_temp_dir(void) {
     return temp_dir;
 }
 
-// Function to execute embedded application
 static ub_result_t ub_execute_embedded_app(ub_runtime_type_t runtime, const char* script_content, 
                                           const char* entry_point, int argc, char* argv[]) {
     char temp_dir[512];
@@ -393,7 +418,11 @@ static ub_result_t ub_execute_embedded_app(ub_runtime_type_t runtime, const char
     
     // Create temporary directory
     const char* base_temp_dir = get_temp_dir();
+#ifdef PLATFORM_WINDOWS
+    snprintf(temp_dir, sizeof(temp_dir), "%s\\ubuilder-%d", base_temp_dir, getpid());
+#else
     snprintf(temp_dir, sizeof(temp_dir), "%s/ubuilder-%d", base_temp_dir, getpid());
+#endif
     if (mkdir(temp_dir, 0755) != 0 && errno != EEXIST) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
@@ -515,7 +544,11 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, co
     
     // Extract directory and filename from script path
     strcpy(script_dir, script_path);
+#ifdef PLATFORM_WINDOWS
+    char* last_slash = strrchr(script_dir, '\\');
+#else
     char* last_slash = strrchr(script_dir, '/');
+#endif
     if (last_slash) {
         *last_slash = '\0';
         strcpy(script_name, last_slash + 1);
@@ -544,11 +577,20 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, co
         
         // Construct paths relative to the temp directory containing the runtime
         char* runtime_dir = strdup(runtime_binary_path);
+#ifdef PLATFORM_WINDOWS
+        char* last_slash = strrchr(runtime_dir, '\\');
+#else
         char* last_slash = strrchr(runtime_dir, '/');
+#endif
         if (last_slash) {
             *last_slash = '\0';
+#ifdef PLATFORM_WINDOWS
+            snprintf(extensions_dir, sizeof(extensions_dir), "%s\\extensions", runtime_dir);
+            snprintf(php_ini_path, sizeof(php_ini_path), "%s\\php.ini", runtime_dir);
+#else
             snprintf(extensions_dir, sizeof(extensions_dir), "%s/extensions", runtime_dir);
             snprintf(php_ini_path, sizeof(php_ini_path), "%s/php.ini", runtime_dir);
+#endif
         } else {
             strcpy(extensions_dir, "./extensions");
             strcpy(php_ini_path, "./php.ini");
@@ -564,7 +606,14 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, co
         snprintf(command, sizeof(command), "\"%s\" \"%s\"%s", runtime_binary_path, script_name, args_str);
     }
     
+#ifdef PLATFORM_WINDOWS
+    // On Windows, use cmd /c to ensure proper execution
+    char cmd_command[2048 + 20];
+    snprintf(cmd_command, sizeof(cmd_command), "cmd /c \"%s\"", command);
+    int result = system(cmd_command);
+#else
     int result = system(command);
+#endif
     
     // Restore original working directory
     chdir(original_dir);
@@ -817,7 +866,11 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     
     // Create temporary directory
     const char* base_temp_dir = get_temp_dir();
+#ifdef PLATFORM_WINDOWS
+    snprintf(temp_dir, sizeof(temp_dir), "%s\\ubuilder-%d", base_temp_dir, getpid());
+#else
     snprintf(temp_dir, sizeof(temp_dir), "%s/ubuilder-%d", base_temp_dir, getpid());
+#endif
     if (mkdir(temp_dir, 0755) != 0 && errno != EEXIST) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
@@ -881,11 +934,24 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
         
         // Create full path in temp directory
         char full_path[1024];
+#ifdef PLATFORM_WINDOWS
+        snprintf(full_path, sizeof(full_path), "%s\\%s", temp_dir, rel_path);
+        
+        // Convert forward slashes to backslashes in rel_path for Windows
+        for (char* p = full_path; *p; p++) {
+            if (*p == '/') *p = '\\';
+        }
+#else
         snprintf(full_path, sizeof(full_path), "%s/%s", temp_dir, rel_path);
+#endif
         
         // Create directory structure if needed
         char* dir_path = strdup(full_path);
+#ifdef PLATFORM_WINDOWS
+        char* last_slash = strrchr(dir_path, '\\');
+#else
         char* last_slash = strrchr(dir_path, '/');
+#endif
         if (last_slash && last_slash != dir_path) {
             *last_slash = '\0';
             create_directory_recursive(dir_path);
@@ -932,17 +998,29 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     // Determine main script path
     switch (runtime) {
         case UB_RUNTIME_PYTHON:
+#ifdef PLATFORM_WINDOWS
+            snprintf(main_script_path, sizeof(main_script_path), "%s\\main.py", temp_dir);
+#else
             snprintf(main_script_path, sizeof(main_script_path), "%s/main.py", temp_dir);
+#endif
             break;
         case UB_RUNTIME_PHP:
             if (strlen(first_php_file) > 0) {
                 strcpy(main_script_path, first_php_file);
             } else {
+#ifdef PLATFORM_WINDOWS
+                snprintf(main_script_path, sizeof(main_script_path), "%s\\main.php", temp_dir);
+#else
                 snprintf(main_script_path, sizeof(main_script_path), "%s/main.php", temp_dir);
+#endif
             }
             break;
         case UB_RUNTIME_NODEJS:
+#ifdef PLATFORM_WINDOWS
+            snprintf(main_script_path, sizeof(main_script_path), "%s\\main.js", temp_dir);
+#else
             snprintf(main_script_path, sizeof(main_script_path), "%s/main.js", temp_dir);
+#endif
             break;
         default:
             return UB_ERROR_RUNTIME_NOT_FOUND;
@@ -953,7 +1031,11 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     
     // Cleanup temporary directory
     char cleanup_cmd[1024];
+#ifdef PLATFORM_WINDOWS
+    snprintf(cleanup_cmd, sizeof(cleanup_cmd), "rmdir /s /q \"%s\"", temp_dir);
+#else
     snprintf(cleanup_cmd, sizeof(cleanup_cmd), "rm -rf %s", temp_dir);
+#endif
     system(cleanup_cmd);
     
     return (exit_code == 0) ? UB_SUCCESS : UB_ERROR_EXECUTION_FAILED;

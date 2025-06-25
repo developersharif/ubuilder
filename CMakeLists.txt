@@ -13,10 +13,13 @@ option(ENABLE_SIGNING "Enable code signing" OFF)
 # Platform detection
 if(WIN32)
     set(PLATFORM_NAME "windows")
+    add_definitions(-DPLATFORM_WINDOWS)
 elseif(APPLE)
     set(PLATFORM_NAME "macos")
+    add_definitions(-DPLATFORM_MACOS)
 else()
     set(PLATFORM_NAME "linux")
+    add_definitions(-DPLATFORM_LINUX)
 endif()
 
 # Compiler-specific options
@@ -32,7 +35,18 @@ include_directories(${CMAKE_SOURCE_DIR}/src/core)
 include_directories(${CMAKE_SOURCE_DIR}/src/runtimes)
 
 # Third-party dependencies
-find_package(ZLIB REQUIRED)
+if(ENABLE_COMPRESSION)
+    find_package(ZLIB)
+    if(ZLIB_FOUND)
+        message(STATUS "ZLIB found: ${ZLIB_LIBRARIES}")
+        add_definitions(-DHAVE_ZLIB)
+    else()
+        message(WARNING "ZLIB not found. Compression features will be disabled.")
+        set(ENABLE_COMPRESSION OFF)
+    endif()
+else()
+    message(STATUS "Compression disabled by user option")
+endif()
 
 # Core library
 add_subdirectory(src)

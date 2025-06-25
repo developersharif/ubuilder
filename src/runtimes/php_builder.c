@@ -108,7 +108,8 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
         if (php_config) pclose(php_config);
         // Fallback to common paths
 #ifdef PLATFORM_WINDOWS
-        strcpy_s(ext_dir, sizeof(ext_dir), "C:\\php\\ext");
+        strncpy(ext_dir, "C:\\php\\ext", sizeof(ext_dir) - 1);
+        ext_dir[sizeof(ext_dir) - 1] = '\0';
 #else
         strcpy(ext_dir, "/usr/lib/php/20240924");
 #endif

@@ -16,14 +16,17 @@ add_library(ubuilder_core STATIC
     runtimes/nodejs_builder.c
 )
 
-target_link_libraries(ubuilder_core ZLIB::ZLIB)
-
 # Main executable
 add_executable(ubuilder
     main.c
 )
 
 target_link_libraries(ubuilder ubuilder_core)
+
+# Conditional ZLIB linking
+if(ZLIB_FOUND AND ENABLE_COMPRESSION)
+    target_link_libraries(ubuilder_core ZLIB::ZLIB)
+endif()
 
 # Platform-specific linking
 if(WIN32)

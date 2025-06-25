@@ -13,6 +13,8 @@
     #define access _access
     #define mkdir(path, mode) _mkdir(path)
     #define readlink(path, buf, size) (-1)  // Not available on Windows
+    #define lstat stat  // Use stat instead of lstat on Windows
+    #define S_ISLNK(mode) (0)  // No symbolic links concept on Windows like Unix
 #else
     #include <unistd.h>
 #endif
@@ -223,7 +225,11 @@ ub_result_t ub_extract_runtime_binary(FILE* input_file, const char* temp_dir, ch
     }
     
     // Create output path
+#ifdef PLATFORM_WINDOWS
+    snprintf(extracted_path, 1024, "%s\\runtime_binary.exe", temp_dir);
+#else
     snprintf(extracted_path, 1024, "%s/runtime_binary", temp_dir);
+#endif
     
     FILE* output_file = fopen(extracted_path, "wb");
     if (!output_file) {
@@ -291,7 +297,11 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
     
     // Create extensions directory
     char ext_dir[1024];
+#ifdef PLATFORM_WINDOWS
+    snprintf(ext_dir, sizeof(ext_dir), "%s\\extensions", temp_dir);
+#else
     snprintf(ext_dir, sizeof(ext_dir), "%s/extensions", temp_dir);
+#endif
     if (mkdir(ext_dir, 0755) != 0 && errno != EEXIST) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
@@ -338,7 +348,11 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
         
         // Create extension file path
         char ext_path[1024];
+#ifdef PLATFORM_WINDOWS
+        snprintf(ext_path, sizeof(ext_path), "%s\\%s", ext_dir, ext_name);
+#else
         snprintf(ext_path, sizeof(ext_path), "%s/%s", ext_dir, ext_name);
+#endif
         
         // Extract extension file
         FILE* ext_file = fopen(ext_path, "wb");
@@ -373,7 +387,11 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
     
     // Create custom php.ini
     char php_ini_path[1024];
+#ifdef PLATFORM_WINDOWS
+    snprintf(php_ini_path, sizeof(php_ini_path), "%s\\php.ini", temp_dir);
+#else
     snprintf(php_ini_path, sizeof(php_ini_path), "%s/php.ini", temp_dir);
+#endif
     FILE* ini_file = fopen(php_ini_path, "w");
     if (ini_file) {
         fwrite(php_ini_content, 1, strlen(php_ini_content), ini_file);
