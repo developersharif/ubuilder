@@ -29,7 +29,7 @@ UBuilder is a cross-platform C/C++ framework that packages dynamic language appl
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourorg/ubuilder.git
+git clone https://github.com/developersharif/ubuilder.git
 cd ubuilder
 
 # Build with CMake
@@ -55,14 +55,6 @@ cmake .. && make
 # Run anywhere - no dependencies needed!
 ./my-php-app
 ```
-
-## 📊 Size Comparison
-
-| Runtime     | Embedded Size | Dependencies |
-| ----------- | ------------- | ------------ |
-| **PHP**     | ~6MB          | ❌ None      |
-| **Python**  | ~7MB          | ❌ None      |
-| **Node.js** | ~120MB        | ❌ None      |
 
 ## Project Structure
 
