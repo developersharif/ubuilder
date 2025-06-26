@@ -141,6 +141,36 @@ static int is_extension_enabled_in_ini(const char* php_ini_path, const char* ext
     return 0;
 }
 
+// Helper function to check if an extension is built into PHP
+static int is_builtin_extension(const char* ext_name) {
+    const char* builtin_extensions[] = {
+        // Core extensions that are typically built into PHP
+        "mbstring.so", "json.so", "ctype.so", "iconv.so", 
+        "hash.so", "filter.so", "pcre.so", "spl.so", "date.so",
+        "core.so", "standard.so", "phar.so", "reflection.so",
+        
+        // Extensions commonly built-in on modern PHP installations
+        "bcmath.so", "calendar.so", "curl.so", "dom.so", "exif.so",
+        "fileinfo.so", "ftp.so", "gd.so", "gettext.so", "libxml.so",
+        "openssl.so", "pdo.so", "pdo_sqlite.so", "posix.so", "random.so",
+        "session.so", "simplexml.so", "sockets.so", "sqlite3.so",
+        "tokenizer.so", "xml.so", "xmlreader.so", "xmlwriter.so",
+        "xsl.so", "zip.so", "zlib.so", "bz2.so", "pcntl.so",
+        "readline.so", "shmop.so", "sodium.so", "sysvmsg.so",
+        "sysvsem.so", "sysvshm.so", "ffi.so", "mysqlnd.so",
+        "mcrypt.so", "ssh2.so",
+        
+        NULL
+    };
+    
+    for (int i = 0; builtin_extensions[i]; i++) {
+        if (strcmp(ext_name, builtin_extensions[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 #ifdef PLATFORM_WINDOWS
 static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_file) {
     // Essential files needed for PHP to run on Windows
@@ -358,35 +388,35 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
 
 // Function to embed essential PHP extensions
 static ub_result_t php_embed_extensions(FILE* output_file) {
-    // Essential PHP extensions that are commonly needed
+    // Essential PHP extensions that are commonly needed but NOT typically built-in
     const char* essential_extensions[] = {
-        "mbstring.so",
-        "json.so", 
-        "ctype.so",
-        "iconv.so",
-        "fileinfo.so",
-        "curl.so",
-        "openssl.so",
-        "pcre.so",
-        "hash.so",
-        "filter.so",
-        "xml.so",
-        "dom.so",
-        "pdo.so",
-        "sqlite3.so",
-        "pdo_sqlite.so",
-        "session.so",
-        "spl.so",
+        // Extensions that are often separate packages but have minimal dependencies
+        "intl.so",
+        "ldap.so",
+        "pgsql.so",
+        "pdo_pgsql.so",
+        "redis.so",
+        "soap.so",
+        "imagick.so",
+        
         NULL
     };
     
-    // Additional useful extensions to scan for
+    // Additional useful extensions to scan for (non-built-in)
     const char* useful_extensions[] = {
-        "gd.so", "zip.so", "mysqli.so", "pdo_mysql.so", "bcmath.so",
-        "calendar.so", "exif.so", "gettext.so", "intl.so", "ldap.so",
-        "pgsql.so", "pdo_pgsql.so", "redis.so", "soap.so", "sockets.so",
-        "xsl.so", "zlib.so", NULL
+        // Database extensions (may have dependency issues)
+        "mysqli.so",
+        "pdo_mysql.so",
+        
+        // Other optional extensions
+        "memcached.so", "mongodb.so", "xdebug.so", "apcu.so",
+        "igbinary.so", "yaml.so", "geoip.so", "mailparse.so",
+        "oauth.so", "tidy.so", "xmlrpc.so", "uuid.so",
+        NULL
     };
+    
+    // Extensions that are typically built into PHP and should be skipped
+    // (This information is now handled by the is_builtin_extension function)
     
     // Get PHP extension directory using php-config or default path
     char ext_dir[1024];
@@ -411,8 +441,13 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
     
     int extensions_embedded = 0;
     
-    // First, embed essential extensions
+    // First, embed essential extensions (skip built-ins)
     for (int i = 0; essential_extensions[i]; i++) {
+        // Skip if this extension is built into PHP
+        if (is_builtin_extension(essential_extensions[i])) {
+            continue;
+        }
+        
         char ext_path[1024];
         snprintf(ext_path, sizeof(ext_path), "%s/%s", ext_dir, essential_extensions[i]);
         
@@ -442,8 +477,13 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
         }
     }
     
-    // Then, try to embed useful extensions if they exist
+    // Then, try to embed useful extensions if they exist (skip built-ins)
     for (int i = 0; useful_extensions[i]; i++) {
+        // Skip if this extension is built into PHP
+        if (is_builtin_extension(useful_extensions[i])) {
+            continue;
+        }
+        
         char ext_path[1024];
         snprintf(ext_path, sizeof(ext_path), "%s/%s", ext_dir, useful_extensions[i]);
         

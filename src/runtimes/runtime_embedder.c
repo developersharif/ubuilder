@@ -420,13 +420,46 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
             
             fclose(ext_file);
             
-            // Add extension to php.ini (but don't auto-load problematic ones)
-            if (strstr(ext_name, "mbstring") || strstr(ext_name, "json") || 
-                strstr(ext_name, "ctype") || strstr(ext_name, "iconv") ||
-                strstr(ext_name, "hash") || strstr(ext_name, "filter")) {
-                char ext_line[256];
-                snprintf(ext_line, sizeof(ext_line), "extension=%s\n", ext_name);
-                strncat(php_ini_content, ext_line, sizeof(php_ini_content) - strlen(php_ini_content) - 1);
+            // Add extension to php.ini (but skip built-in extensions to avoid conflicts)
+            // These extensions are commonly built into PHP and should not be loaded again
+            const char* builtin_extensions[] = {
+                // Core extensions
+                "mbstring.so", "json.so", "ctype.so", "iconv.so", 
+                "hash.so", "filter.so", "pcre.so", "spl.so", "date.so",
+                "core.so", "standard.so", "phar.so", "reflection.so",
+                
+                // Common built-in extensions
+                "bcmath.so", "calendar.so", "curl.so", "dom.so", "exif.so",
+                "fileinfo.so", "ftp.so", "gd.so", "gettext.so", "libxml.so",
+                "openssl.so", "pdo.so", "pdo_sqlite.so", "posix.so", "random.so",
+                "session.so", "simplexml.so", "sockets.so", "sqlite3.so",
+                "tokenizer.so", "xml.so", "xmlreader.so", "xmlwriter.so",
+                "xsl.so", "zip.so", "zlib.so", "bz2.so", "pcntl.so",
+                "readline.so", "shmop.so", "sodium.so", "sysvmsg.so",
+                "sysvsem.so", "sysvshm.so", "ffi.so", "mysqlnd.so",
+                "mcrypt.so", "ssh2.so",
+                
+                NULL
+            };
+            
+            int is_builtin = 0;
+            for (int i = 0; builtin_extensions[i]; i++) {
+                if (strcmp(ext_name, builtin_extensions[i]) == 0) {
+                    is_builtin = 1;
+                    break;
+                }
+            }
+            
+            if (!is_builtin) {
+                // Special handling for MySQL extensions that need mysqlnd
+                if (strstr(ext_name, "mysqli.so") || strstr(ext_name, "pdo_mysql.so")) {
+                    // These extensions often have dependency issues, skip them
+                    // Users can install them separately if needed
+                } else {
+                    char ext_line[256];
+                    snprintf(ext_line, sizeof(ext_line), "extension=%s\n", ext_name);
+                    strncat(php_ini_content, ext_line, sizeof(php_ini_content) - strlen(php_ini_content) - 1);
+                }
             }
             
             extensions_extracted++;
