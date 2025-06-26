@@ -594,9 +594,17 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, co
         }
         
         // Use custom PHP configuration with complete isolation from host system
+#ifdef PLATFORM_WINDOWS
+        // On Windows, use set command to set environment variable
+        snprintf(command, sizeof(command), 
+                "set PHP_INI_SCAN_DIR= && \"%s\" -c \"%s\" \"%s\"%s", 
+                runtime_binary_path, php_ini_path, script_name, args_str);
+#else
+        // On Unix-like systems, use shell environment variable syntax
         snprintf(command, sizeof(command), 
                 "PHP_INI_SCAN_DIR= \"%s\" -c \"%s\" \"%s\"%s", 
                 runtime_binary_path, php_ini_path, script_name, args_str);
+#endif
         
         free(runtime_dir);
     } else if (runtime == UB_RUNTIME_PYTHON) {

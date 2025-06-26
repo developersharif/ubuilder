@@ -21,9 +21,7 @@
 // Forward declarations
 static ub_result_t php_embed_extensions(FILE* output_file);
 #ifdef PLATFORM_WINDOWS
-#ifdef PLATFORM_WINDOWS
 static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_file);
-#endif
 #endif
 
 // PHP runtime validation
@@ -176,14 +174,28 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
     // Essential files needed for PHP to run on Windows
     const char* essential_files[] = {
         "php.exe",
-        "php8ts.dll",          // Main PHP engine
         "php.ini",             // Configuration (if exists)
+        NULL
+    };
+    
+    // Optional DLL files that may or may not be present depending on PHP build
+    const char* optional_files[] = {
+        "php8ts.dll",          // Main PHP engine (Thread Safe)
+        "php8.dll",            // Main PHP engine (Non-Thread Safe)
         "libcrypto-3-x64.dll", // OpenSSL crypto
         "libssl-3-x64.dll",    // OpenSSL
         "icudt72.dll",         // ICU data
+        "icudt73.dll",         // ICU data (newer version)
         "icuin72.dll",         // ICU internationalization  
+        "icuin73.dll",         // ICU internationalization (newer version)
         "icuuc72.dll",         // ICU common
+        "icuuc73.dll",         // ICU common (newer version)
         "libsqlite3.dll",      // SQLite
+        "ssleay32.dll",        // OpenSSL (older naming)
+        "libeay32.dll",        // OpenSSL (older naming)
+        "msvcr110.dll",        // Visual C++ runtime
+        "msvcr120.dll",        // Visual C++ runtime
+        "msvcr140.dll",        // Visual C++ runtime
         NULL
     };
     
@@ -213,7 +225,7 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
     struct stat ini_stat;
     int has_php_ini = (stat(php_ini_path, &ini_stat) == 0);
     
-    // First, embed essential core files
+    // First, embed essential core files (required)
     for (int i = 0; essential_files[i]; i++) {
         char file_path[1024];
         snprintf(file_path, sizeof(file_path), "%s\\%s", php_dir, essential_files[i]);
@@ -243,8 +255,42 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
                 files_embedded++;
             }
         } else if (strcmp(essential_files[i], "php.ini") != 0) {
-            // php.ini is optional, but others are required
+            // php.ini is optional, but php.exe is required
             printf("  Warning: Required file not found: %s\n", file_path);
+        }
+    }
+    
+    // Then, embed optional runtime files (best effort)
+    for (int i = 0; optional_files[i]; i++) {
+        char file_path[1024];
+        snprintf(file_path, sizeof(file_path), "%s\\%s", php_dir, optional_files[i]);
+        
+        struct stat st;
+        if (stat(file_path, &st) == 0) {
+            FILE* file = fopen(file_path, "rb");
+            if (file) {
+                printf("  Found optional file: %s (%.2f KB)\n", optional_files[i], st.st_size / 1024.0);
+                
+                // Write filename length and name
+                uint32_t name_len = (uint32_t)strlen(optional_files[i]);
+                fwrite(&name_len, sizeof(name_len), 1, output_file);
+                fwrite(optional_files[i], 1, name_len, output_file);
+                
+                // Write file size
+                uint32_t file_size = (uint32_t)st.st_size;
+                fwrite(&file_size, sizeof(file_size), 1, output_file);
+                
+                // Write file content
+                char buffer[8192];
+                size_t bytes_read;
+                while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+                    fwrite(buffer, 1, bytes_read, output_file);
+                }
+                
+                fclose(file);
+                total_size += st.st_size;
+                files_embedded++;
+            }
         }
     }
     
