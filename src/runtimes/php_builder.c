@@ -21,7 +21,9 @@
 // Forward declarations
 static ub_result_t php_embed_extensions(FILE* output_file);
 #ifdef PLATFORM_WINDOWS
+#ifdef PLATFORM_WINDOWS
 static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_file);
+#endif
 #endif
 
 // PHP runtime validation
@@ -139,6 +141,7 @@ static int is_extension_enabled_in_ini(const char* php_ini_path, const char* ext
     return 0;
 }
 
+#ifdef PLATFORM_WINDOWS
 static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_file) {
     // Essential files needed for PHP to run on Windows
     const char* essential_files[] = {
@@ -351,6 +354,7 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
     
     return UB_SUCCESS;
 }
+#endif
 
 // Function to embed essential PHP extensions
 static ub_result_t php_embed_extensions(FILE* output_file) {

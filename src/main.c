@@ -51,14 +51,18 @@ static ub_result_t parse_arguments(int argc, char* argv[], ub_config_t* config) 
 #ifdef PLATFORM_WINDOWS
     // Windows-compatible argument parsing
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--project-dir") == 0 || strcmp(argv[i], "-p") == 0) {
+        char* arg = argv[i];
+        
+        if (strcmp(arg, "--project-dir") == 0 || strcmp(arg, "-p") == 0) {
             if (i + 1 < argc) {
                 config->project_dir = strdup(argv[++i]);
             } else {
                 fprintf(stderr, "Error: --project-dir requires an argument\n");
                 return UB_ERROR_INVALID_ARGS;
             }
-        } else if (strcmp(argv[i], "--runtime") == 0 || strcmp(argv[i], "-r") == 0) {
+        } else if (strncmp(arg, "--project-dir=", 14) == 0) {
+            config->project_dir = strdup(arg + 14);
+        } else if (strcmp(arg, "--runtime") == 0 || strcmp(arg, "-r") == 0) {
             if (i + 1 < argc) {
                 config->runtime = ub_parse_runtime(argv[++i]);
                 if (config->runtime == UB_RUNTIME_UNKNOWN) {
@@ -69,32 +73,42 @@ static ub_result_t parse_arguments(int argc, char* argv[], ub_config_t* config) 
                 fprintf(stderr, "Error: --runtime requires an argument\n");
                 return UB_ERROR_INVALID_ARGS;
             }
-        } else if (strcmp(argv[i], "--output") == 0 || strcmp(argv[i], "-o") == 0) {
+        } else if (strncmp(arg, "--runtime=", 10) == 0) {
+            config->runtime = ub_parse_runtime(arg + 10);
+            if (config->runtime == UB_RUNTIME_UNKNOWN) {
+                fprintf(stderr, "Error: Unknown runtime '%s'\n", arg + 10);
+                return UB_ERROR_INVALID_ARGS;
+            }
+        } else if (strcmp(arg, "--output") == 0 || strcmp(arg, "-o") == 0) {
             if (i + 1 < argc) {
                 config->output_path = strdup(argv[++i]);
             } else {
                 fprintf(stderr, "Error: --output requires an argument\n");
                 return UB_ERROR_INVALID_ARGS;
             }
-        } else if (strcmp(argv[i], "--entry-point") == 0 || strcmp(argv[i], "-e") == 0) {
+        } else if (strncmp(arg, "--output=", 9) == 0) {
+            config->output_path = strdup(arg + 9);
+        } else if (strcmp(arg, "--entry-point") == 0 || strcmp(arg, "-e") == 0) {
             if (i + 1 < argc) {
                 config->entry_point = strdup(argv[++i]);
             } else {
                 fprintf(stderr, "Error: --entry-point requires an argument\n");
                 return UB_ERROR_INVALID_ARGS;
             }
-        } else if (strcmp(argv[i], "--gui") == 0 || strcmp(argv[i], "-g") == 0) {
+        } else if (strncmp(arg, "--entry-point=", 14) == 0) {
+            config->entry_point = strdup(arg + 14);
+        } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
-        } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
+        } else if (strcmp(arg, "--verbose") == 0 || strcmp(arg, "-v") == 0) {
             config->verbose = 1;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+        } else if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             print_usage(argv[0]);
             return UB_ERROR_INVALID_ARGS; // Exit after help
-        } else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
+        } else if (strcmp(arg, "--version") == 0 || strcmp(arg, "-V") == 0) {
             print_version();
             return UB_ERROR_INVALID_ARGS; // Exit after version
         } else {
-            fprintf(stderr, "Error: Unknown option '%s'\n", argv[i]);
+            fprintf(stderr, "Error: Unknown option '%s'\n", arg);
             return UB_ERROR_INVALID_ARGS;
         }
     }

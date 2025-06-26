@@ -346,7 +346,7 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
     free(marker);
     
     // Create extensions directory
-    char ext_dir[1024];
+    char ext_dir[2048];
 #ifdef PLATFORM_WINDOWS
     snprintf(ext_dir, sizeof(ext_dir), "%s\\extensions", temp_dir);
 #else
@@ -397,7 +397,7 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
         }
         
         // Create extension file path
-        char ext_path[1024];
+        char ext_path[2048];
 #ifdef PLATFORM_WINDOWS
         snprintf(ext_path, sizeof(ext_path), "%s\\%s", ext_dir, ext_name);
 #else
@@ -436,7 +436,7 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
     }
     
     // Create custom php.ini
-    char php_ini_path[1024];
+    char php_ini_path[2048];
 #ifdef PLATFORM_WINDOWS
     snprintf(php_ini_path, sizeof(php_ini_path), "%s\\php.ini", temp_dir);
 #else
@@ -625,8 +625,6 @@ ub_result_t ub_extract_windows_nodejs_runtime(FILE* input_file, const char* temp
         files_extracted++;
     }
     
-    printf("Windows Node.js runtime extraction complete: %d files\n", files_extracted);
-    
     if (files_extracted == 0) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
@@ -716,8 +714,6 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
         free(filename);
         files_extracted++;
     }
-    
-    printf("Windows Python runtime extraction complete: %d files\n", files_extracted);
     
     if (files_extracted == 0) {
         return UB_ERROR_EXTRACTION_FAILED;
