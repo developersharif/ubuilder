@@ -593,8 +593,10 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, co
             strcpy(php_ini_path, "./php.ini");
         }
         
-        // Use custom PHP configuration that points to our embedded extensions
-        snprintf(command, sizeof(command), "\"%s\" \"%s\"%s", runtime_binary_path, script_name, args_str);
+        // Use custom PHP configuration with complete isolation from host system
+        snprintf(command, sizeof(command), 
+                "PHP_INI_SCAN_DIR= \"%s\" -c \"%s\" \"%s\"%s", 
+                runtime_binary_path, php_ini_path, script_name, args_str);
         
         free(runtime_dir);
     } else if (runtime == UB_RUNTIME_PYTHON) {

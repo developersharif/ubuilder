@@ -356,15 +356,32 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
     
-    // Extract extensions (silent operation)
+    // Extract extensions and create completely isolated php.ini
     int extensions_extracted = 0;
-    char php_ini_content[4096] = "";
-    strcat(php_ini_content, "; UBuilder generated PHP configuration\n");
-    strcat(php_ini_content, "; Disable all system extensions to avoid conflicts\n");
+    char php_ini_content[8192] = "";  // Increased size for more extensions
+    strcat(php_ini_content, "; UBuilder generated PHP configuration for complete isolation\n");
+    strcat(php_ini_content, "; This configuration completely isolates embedded PHP from host system\n");
+    strcat(php_ini_content, "\n; CRITICAL: Prevent scanning system configuration directories\n");
+    strcat(php_ini_content, "; This prevents loading of host system extension configurations\n");
+    strcat(php_ini_content, "cfg_file_path = \"\"\n");  // Disable additional config file scanning
+    strcat(php_ini_content, "\n; Core PHP settings for isolated execution\n");
     strcat(php_ini_content, "enable_dl = Off\n");
     strcat(php_ini_content, "auto_globals_jit = On\n");
     strcat(php_ini_content, "default_charset = \"UTF-8\"\n");
-    strcat(php_ini_content, "\n; Load embedded extensions\n");
+    strcat(php_ini_content, "extension_dir = \"\"\n");  // Completely disable system extension loading
+    strcat(php_ini_content, "auto_prepend_file = \"\"\n");
+    strcat(php_ini_content, "auto_append_file = \"\"\n");
+    strcat(php_ini_content, "\n; Error handling for maximum compatibility\n");
+    strcat(php_ini_content, "error_reporting = E_ALL & ~E_WARNING & ~E_NOTICE\n");
+    strcat(php_ini_content, "display_errors = On\n");
+    strcat(php_ini_content, "log_errors = Off\n");
+    strcat(php_ini_content, "\n; EXTENSIONS EMBEDDED BUT NOT LOADED\n");
+    strcat(php_ini_content, "; All available extensions from build machine are embedded in this executable\n");
+    strcat(php_ini_content, "; They are not automatically loaded to prevent compatibility issues\n");
+    strcat(php_ini_content, "; Advanced users can manually enable specific extensions by:\n");
+    strcat(php_ini_content, "; 1. Extracting extensions to a directory\n");
+    strcat(php_ini_content, "; 2. Setting extension_dir and adding extension= lines\n");
+    strcat(php_ini_content, "; 3. Using dl() function to load them dynamically (if enable_dl=On)\n");
     
     while (1) {
         uint32_t name_len;
@@ -420,47 +437,10 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
             
             fclose(ext_file);
             
-            // Add extension to php.ini (but skip built-in extensions to avoid conflicts)
-            // These extensions are commonly built into PHP and should not be loaded again
-            const char* builtin_extensions[] = {
-                // Core extensions
-                "mbstring.so", "json.so", "ctype.so", "iconv.so", 
-                "hash.so", "filter.so", "pcre.so", "spl.so", "date.so",
-                "core.so", "standard.so", "phar.so", "reflection.so",
-                
-                // Common built-in extensions
-                "bcmath.so", "calendar.so", "curl.so", "dom.so", "exif.so",
-                "fileinfo.so", "ftp.so", "gd.so", "gettext.so", "libxml.so",
-                "openssl.so", "pdo.so", "pdo_sqlite.so", "posix.so", "random.so",
-                "session.so", "simplexml.so", "sockets.so", "sqlite3.so",
-                "tokenizer.so", "xml.so", "xmlreader.so", "xmlwriter.so",
-                "xsl.so", "zip.so", "zlib.so", "bz2.so", "pcntl.so",
-                "readline.so", "shmop.so", "sodium.so", "sysvmsg.so",
-                "sysvsem.so", "sysvshm.so", "ffi.so", "mysqlnd.so",
-                "mcrypt.so", "ssh2.so",
-                
-                NULL
-            };
-            
-            int is_builtin = 0;
-            for (int i = 0; builtin_extensions[i]; i++) {
-                if (strcmp(ext_name, builtin_extensions[i]) == 0) {
-                    is_builtin = 1;
-                    break;
-                }
-            }
-            
-            if (!is_builtin) {
-                // Special handling for MySQL extensions that need mysqlnd
-                if (strstr(ext_name, "mysqli.so") || strstr(ext_name, "pdo_mysql.so")) {
-                    // These extensions often have dependency issues, skip them
-                    // Users can install them separately if needed
-                } else {
-                    char ext_line[256];
-                    snprintf(ext_line, sizeof(ext_line), "extension=%s\n", ext_name);
-                    strncat(php_ini_content, ext_line, sizeof(php_ini_content) - strlen(php_ini_content) - 1);
-                }
-            }
+            // Complete isolation strategy: Don't load ANY external extensions
+            // Extensions are embedded for potential future use, but not automatically loaded
+            // This prevents ALL compatibility issues across different systems
+            (void)ext_name;  // Suppress unused variable warning
             
             extensions_extracted++;
         }

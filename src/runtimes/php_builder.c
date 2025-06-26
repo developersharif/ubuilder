@@ -388,36 +388,6 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
 
 // Function to embed essential PHP extensions
 static ub_result_t php_embed_extensions(FILE* output_file) {
-    // Essential PHP extensions that are commonly needed but NOT typically built-in
-    const char* essential_extensions[] = {
-        // Extensions that are often separate packages but have minimal dependencies
-        "intl.so",
-        "ldap.so",
-        "pgsql.so",
-        "pdo_pgsql.so",
-        "redis.so",
-        "soap.so",
-        "imagick.so",
-        
-        NULL
-    };
-    
-    // Additional useful extensions to scan for (non-built-in)
-    const char* useful_extensions[] = {
-        // Database extensions (may have dependency issues)
-        "mysqli.so",
-        "pdo_mysql.so",
-        
-        // Other optional extensions
-        "memcached.so", "mongodb.so", "xdebug.so", "apcu.so",
-        "igbinary.so", "yaml.so", "geoip.so", "mailparse.so",
-        "oauth.so", "tidy.so", "xmlrpc.so", "uuid.so",
-        NULL
-    };
-    
-    // Extensions that are typically built into PHP and should be skipped
-    // (This information is now handled by the is_builtin_extension function)
-    
     // Get PHP extension directory using php-config or default path
     char ext_dir[1024];
     FILE* php_config = popen("php-config --extension-dir 2>/dev/null", "r");
@@ -431,7 +401,7 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
         strcpy(ext_dir, "/usr/lib/php/20240924");
     }
     
-    printf("Embedding PHP extensions from: %s\n", ext_dir);
+    printf("Embedding ALL available PHP extensions from: %s (for future use)\n", ext_dir);
     
     // Write marker for extension section
     const char* ext_marker = "PHP_EXTENSIONS_START";
@@ -441,85 +411,54 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
     
     int extensions_embedded = 0;
     
-    // First, embed essential extensions (skip built-ins)
-    for (int i = 0; essential_extensions[i]; i++) {
-        // Skip if this extension is built into PHP
-        if (is_builtin_extension(essential_extensions[i])) {
-            continue;
-        }
-        
-        char ext_path[1024];
-        snprintf(ext_path, sizeof(ext_path), "%s/%s", ext_dir, essential_extensions[i]);
-        
-        struct stat st;
-        if (stat(ext_path, &st) == 0) {
-            FILE* ext_file = fopen(ext_path, "rb");
-            if (ext_file) {
-                // Write extension filename length and name
-                uint32_t name_len = (uint32_t)strlen(essential_extensions[i]);
-                fwrite(&name_len, sizeof(name_len), 1, output_file);
-                fwrite(essential_extensions[i], 1, name_len, output_file);
+    // Scan extension directory and embed ALL .so files 
+    // They will be available but not automatically loaded to prevent conflicts
+    DIR* dir = opendir(ext_dir);
+    if (dir) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != NULL) {
+            // Only process .so files
+            if (strstr(entry->d_name, ".so") && strlen(entry->d_name) > 3) {
+                char ext_path[1024];
+                snprintf(ext_path, sizeof(ext_path), "%s/%s", ext_dir, entry->d_name);
                 
-                // Write extension file size
-                uint32_t ext_size = st.st_size;
-                fwrite(&ext_size, sizeof(ext_size), 1, output_file);
-                
-                // Write extension content
-                char buffer[8192];
-                size_t bytes_read;
-                while ((bytes_read = fread(buffer, 1, sizeof(buffer), ext_file)) > 0) {
-                    fwrite(buffer, 1, bytes_read, output_file);
+                struct stat st;
+                if (stat(ext_path, &st) == 0 && S_ISREG(st.st_mode)) {
+                    FILE* ext_file = fopen(ext_path, "rb");
+                    if (ext_file) {
+                        printf("  Embedding extension: %s (%.2f KB)\n", 
+                               entry->d_name, st.st_size / 1024.0);
+                        
+                        // Write extension filename length and name
+                        uint32_t name_len = (uint32_t)strlen(entry->d_name);
+                        fwrite(&name_len, sizeof(name_len), 1, output_file);
+                        fwrite(entry->d_name, 1, name_len, output_file);
+                        
+                        // Write extension file size
+                        uint32_t ext_size = st.st_size;
+                        fwrite(&ext_size, sizeof(ext_size), 1, output_file);
+                        
+                        // Write extension content
+                        char buffer[8192];
+                        size_t bytes_read;
+                        while ((bytes_read = fread(buffer, 1, sizeof(buffer), ext_file)) > 0) {
+                            fwrite(buffer, 1, bytes_read, output_file);
+                        }
+                        
+                        fclose(ext_file);
+                        extensions_embedded++;
+                    }
                 }
-                
-                fclose(ext_file);
-                extensions_embedded++;
             }
         }
-    }
-    
-    // Then, try to embed useful extensions if they exist (skip built-ins)
-    for (int i = 0; useful_extensions[i]; i++) {
-        // Skip if this extension is built into PHP
-        if (is_builtin_extension(useful_extensions[i])) {
-            continue;
-        }
-        
-        char ext_path[1024];
-        snprintf(ext_path, sizeof(ext_path), "%s/%s", ext_dir, useful_extensions[i]);
-        
-        struct stat st;
-        if (stat(ext_path, &st) == 0) {
-            FILE* ext_file = fopen(ext_path, "rb");
-            if (ext_file) {
-                // Write extension filename length and name
-                uint32_t name_len = (uint32_t)strlen(useful_extensions[i]);
-                fwrite(&name_len, sizeof(name_len), 1, output_file);
-                fwrite(useful_extensions[i], 1, name_len, output_file);
-                
-                // Write extension file size
-                uint32_t ext_size = st.st_size;
-                fwrite(&ext_size, sizeof(ext_size), 1, output_file);
-                
-                // Write extension content
-                char buffer[8192];
-                size_t bytes_read;
-                while ((bytes_read = fread(buffer, 1, sizeof(buffer), ext_file)) > 0) {
-                    fwrite(buffer, 1, bytes_read, output_file);
-                }
-                
-                fclose(ext_file);
-                extensions_embedded++;
-            }
-        }
+        closedir(dir);
     }
     
     // Write end marker (empty name)
     uint32_t end_marker = 0;
     fwrite(&end_marker, sizeof(end_marker), 1, output_file);
     
-    if (extensions_embedded > 0) {
-        printf("Embedded %d PHP extensions\n", extensions_embedded);
-    }
+    printf("Embedded %d PHP extensions (available but not auto-loaded for compatibility)\n", extensions_embedded);
     return UB_SUCCESS;
 }
 
