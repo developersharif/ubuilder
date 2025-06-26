@@ -632,13 +632,74 @@ ub_result_t ub_extract_windows_nodejs_runtime(FILE* input_file, const char* temp
     return UB_SUCCESS;
 }
 
-// Function to extract Windows Python runtime (multiple files format)
+// Function to extract Windows Python runtime (multiple files format) - OPTIMIZED
 ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp_dir, char* extracted_path) {
     if (!input_file || !temp_dir || !extracted_path) {
         return UB_ERROR_INVALID_ARGS;
     }
     
     int files_extracted = 0;
+    int files_skipped = 0;
+    
+    // Create a persistent cache directory based on UBuilder version/hash
+    char cache_dir[1024];
+    char cache_root[1024];
+    
+    // Use a fixed cache location that persists across runs
+#ifdef PLATFORM_WINDOWS
+    snprintf(cache_root, sizeof(cache_root), "%s\\UBuilder", getenv("LOCALAPPDATA") ? getenv("LOCALAPPDATA") : getenv("TEMP"));
+#else
+    snprintf(cache_root, sizeof(cache_root), "%s/.ubuilder", getenv("HOME"));
+#endif
+    
+    snprintf(cache_dir, sizeof(cache_dir), "%s\\PythonRuntime", cache_root);
+    
+    // Create cache directories
+    char mkdir_cmd[1024];
+    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir \"%s\" 2>nul", cache_root);
+    system(mkdir_cmd);
+    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir \"%s\" 2>nul", cache_dir);
+    system(mkdir_cmd);
+    
+    // Check if cache is already populated (quick check for python.exe)
+    char python_exe_check[1024];
+    snprintf(python_exe_check, sizeof(python_exe_check), "%s\\python.exe", cache_dir);
+    
+    int cache_exists = (access(python_exe_check, F_OK) == 0);
+    
+    if (cache_exists) {
+        printf("Using cached Python runtime (skipping extraction)...\n");
+        strcpy(extracted_path, python_exe_check);
+        
+        // Still need to read through the embedded data to advance file pointer
+        while (1) {
+            uint32_t name_len;
+            
+            if (fread(&name_len, sizeof(name_len), 1, input_file) != 1) {
+                break;
+            }
+            
+            if (name_len == 0) {
+                break;
+            }
+            
+            // Skip filename
+            fseek(input_file, name_len, SEEK_CUR);
+            
+            // Read and skip file size
+            uint32_t file_size;
+            if (fread(&file_size, sizeof(file_size), 1, input_file) != 1) {
+                break;
+            }
+            
+            // Skip file content
+            fseek(input_file, file_size, SEEK_CUR);
+        }
+        
+        return UB_SUCCESS;
+    }
+    
+    printf("Extracting Python runtime to persistent cache (one-time setup)...\n");
     
     while (1) {
         uint32_t name_len;
@@ -672,9 +733,9 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
             return UB_ERROR_EXTRACTION_FAILED;
         }
         
-        // Create full path, handling subdirectories (like Lib\*.py)
+        // Create full path in cache directory
         char full_path[1024];
-        snprintf(full_path, sizeof(full_path), "%s\\%s", temp_dir, filename);
+        snprintf(full_path, sizeof(full_path), "%s\\%s", cache_dir, filename);
         
         // Create directory structure if needed
         char* dir_path = strdup(full_path);
@@ -705,6 +766,7 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
             remaining -= (uint32_t)bytes_read;
         }
         fclose(output_file);
+        files_extracted++;
         
         // Remember python.exe path for execution
         if (strcmp(filename, "python.exe") == 0) {
@@ -712,8 +774,14 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
         }
         
         free(filename);
-        files_extracted++;
+        
+        // Progress indicator for large extractions
+        if (files_extracted % 1000 == 0) {
+            printf("  Extracted %d files...\n", files_extracted);
+        }
     }
+    
+    printf("Python runtime cached: %d files extracted to %s\n", files_extracted, cache_dir);
     
     if (files_extracted == 0) {
         return UB_ERROR_EXTRACTION_FAILED;

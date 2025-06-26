@@ -594,8 +594,33 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, co
         }
         
         // Use custom PHP configuration that points to our embedded extensions
-        snprintf(command, sizeof(command), "\"%s\" -n -d extension_dir=\"%s\" -c \"%s\" \"%s\"%s", 
-                runtime_binary_path, extensions_dir, php_ini_path, script_name, args_str);
+        snprintf(command, sizeof(command), "\"%s\" \"%s\"%s", runtime_binary_path, script_name, args_str);
+        
+        free(runtime_dir);
+    } else if (runtime == UB_RUNTIME_PYTHON) {
+        // For Python, set PYTHONPATH to our cache directory for module resolution
+        char* runtime_dir = strdup(runtime_binary_path);
+#ifdef PLATFORM_WINDOWS
+        char* last_slash = strrchr(runtime_dir, '\\');
+#else
+        char* last_slash = strrchr(runtime_dir, '/');
+#endif
+        if (last_slash) {
+            *last_slash = '\0';
+        }
+        
+        // Set PYTHONPATH to include both Lib and site-packages from cache
+        char python_path[2048];
+#ifdef PLATFORM_WINDOWS
+        snprintf(python_path, sizeof(python_path), 
+                "set PYTHONPATH=%s\\Lib;%s\\Lib\\site-packages;%%PYTHONPATH%% && \"%s\" \"%s\"%s", 
+                runtime_dir, runtime_dir, runtime_binary_path, script_name, args_str);
+#else
+        snprintf(python_path, sizeof(python_path), 
+                "PYTHONPATH=%s/Lib:%s/Lib/site-packages:$PYTHONPATH \"%s\" \"%s\"%s", 
+                runtime_dir, runtime_dir, runtime_binary_path, script_name, args_str);
+#endif
+        strcpy(command, python_path);
         
         free(runtime_dir);
     } else {

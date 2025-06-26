@@ -40,6 +40,7 @@ static ub_result_t python_validate_project(const char* project_dir) {
 // Forward declarations
 #ifdef PLATFORM_WINDOWS
 static ub_result_t python_embed_windows_runtime(const char* python_dir, FILE* output_file);
+static void python_embed_directory_recursive(const char* dir_path, const char* base_python_dir, FILE* output_file, size_t* total_size, int* files_embedded);
 #endif
 
 // Embed Python runtime
@@ -326,64 +327,130 @@ static ub_result_t python_embed_windows_runtime(const char* python_dir, FILE* ou
         }
     }
     
-    // Try to embed Python standard library (Lib directory) - more comprehensive
+    // Embed complete Python standard library (Lib directory) recursively
     char lib_dir[1024];
     snprintf(lib_dir, sizeof(lib_dir), "%s\\Lib", python_dir);
     
     struct stat lib_stat;
     if (stat(lib_dir, &lib_stat) == 0) {
-        // Essential standard library modules needed for basic Python operation
-        const char* essential_lib_files[] = {
-            "Lib\\encodings\\__init__.py",
-            "Lib\\encodings\\utf_8.py",
-            "Lib\\encodings\\cp1252.py",
-            "Lib\\encodings\\latin_1.py",
-            "Lib\\encodings\\ascii.py",
-            "Lib\\codecs.py",
-            "Lib\\os.py",
-            "Lib\\sys.py",
-            "Lib\\io.py", 
-            "Lib\\_collections_abc.py",
-            "Lib\\abc.py",
-            "Lib\\types.py",
-            "Lib\\functools.py",
-            "Lib\\operator.py",
-            "Lib\\keyword.py",
-            "Lib\\heapq.py",
-            "Lib\\reprlib.py",
-            "Lib\\collections\\__init__.py",
-            "Lib\\json\\__init__.py",
-            "Lib\\json\\decoder.py",
-            "Lib\\json\\encoder.py",
-            NULL
-        };
+        printf("  Embedding complete Python standard library...\n");
         
-        for (int i = 0; essential_lib_files[i]; i++) {
-            char lib_file_path[1024];
-            snprintf(lib_file_path, sizeof(lib_file_path), "%s\\%s", python_dir, essential_lib_files[i]);
-            
-            struct stat st;
-            if (stat(lib_file_path, &st) == 0) {
-                FILE* lib_file = fopen(lib_file_path, "rb");
-                if (lib_file) {
-                    uint32_t name_len = (uint32_t)strlen(essential_lib_files[i]);
-                    fwrite(&name_len, sizeof(name_len), 1, output_file);
-                    fwrite(essential_lib_files[i], 1, name_len, output_file);
-                    
-                    uint32_t file_size = (uint32_t)st.st_size;
-                    fwrite(&file_size, sizeof(file_size), 1, output_file);
-                    
-                    char buffer[8192];
-                    size_t bytes_read;
-                    while ((bytes_read = fread(buffer, 1, sizeof(buffer), lib_file)) > 0) {
-                        fwrite(buffer, 1, bytes_read, output_file);
+        // Use recursive function to embed ALL Lib directory contents
+        python_embed_directory_recursive(lib_dir, python_dir, output_file, &total_size, &files_embedded);
+    }
+    
+    // Embed complete site-packages (pip-installed packages) recursively  
+    char site_packages_dir[1024];
+    snprintf(site_packages_dir, sizeof(site_packages_dir), "%s\\Lib\\site-packages", python_dir);
+    
+    struct stat site_stat;
+    if (stat(site_packages_dir, &site_stat) == 0) {
+        printf("  Embedding all pip-installed packages...\n");
+        
+        // Use recursive function to embed ALL site-packages contents
+        python_embed_directory_recursive(site_packages_dir, python_dir, output_file, &total_size, &files_embedded);
+    }
+    
+    // Embed tcl directory for tkinter support
+    char tcl_dir[1024];
+    snprintf(tcl_dir, sizeof(tcl_dir), "%s\\tcl", python_dir);
+    
+    struct stat tcl_stat;
+    if (stat(tcl_dir, &tcl_stat) == 0) {
+        printf("  Embedding TCL/TK for tkinter support...\n");
+        
+        // Use recursive function to embed ALL tcl directory contents
+        python_embed_directory_recursive(tcl_dir, python_dir, output_file, &total_size, &files_embedded);
+    }
+    
+    // Embed Python extension modules and DLLs from DLLs directory (critical for stdlib and tkinter)
+    char dlls_dir[1024];
+    snprintf(dlls_dir, sizeof(dlls_dir), "%s\\DLLs", python_dir);
+    
+    struct stat dlls_stat;
+    if (stat(dlls_dir, &dlls_stat) == 0) {
+        printf("  Embedding Python extension modules and DLLs...\n");
+        
+        // Embed all *.pyd files (Python extensions)
+        WIN32_FIND_DATAA dlls_find_data;
+        HANDLE dlls_find_handle;
+        char dlls_search_path[1024];
+        
+        snprintf(dlls_search_path, sizeof(dlls_search_path), "%s\\*.pyd", dlls_dir);
+        dlls_find_handle = FindFirstFileA(dlls_search_path, &dlls_find_data);
+        
+        if (dlls_find_handle != INVALID_HANDLE_VALUE) {
+            do {
+                char pyd_path[1024];
+                snprintf(pyd_path, sizeof(pyd_path), "%s\\%s", dlls_dir, dlls_find_data.cFileName);
+                
+                struct stat pyd_stat;
+                if (stat(pyd_path, &pyd_stat) == 0) {
+                    FILE* pyd_file = fopen(pyd_path, "rb");
+                    if (pyd_file) {
+                        // Store with DLLs\ prefix to maintain directory structure
+                        char pyd_name[256];
+                        snprintf(pyd_name, sizeof(pyd_name), "DLLs\\%s", dlls_find_data.cFileName);
+                        
+                        uint32_t name_len = (uint32_t)strlen(pyd_name);
+                        fwrite(&name_len, sizeof(name_len), 1, output_file);
+                        fwrite(pyd_name, 1, name_len, output_file);
+                        
+                        uint32_t file_size = (uint32_t)pyd_stat.st_size;
+                        fwrite(&file_size, sizeof(file_size), 1, output_file);
+                        
+                        char buffer[8192];
+                        size_t bytes_read;
+                        while ((bytes_read = fread(buffer, 1, sizeof(buffer), pyd_file)) > 0) {
+                            fwrite(buffer, 1, bytes_read, output_file);
+                        }
+                        
+                        fclose(pyd_file);
+                        total_size += pyd_stat.st_size;
+                        files_embedded++;
                     }
-                    
-                    fclose(lib_file);
-                    total_size += st.st_size;
-                    files_embedded++;
                 }
-            }
+            } while (FindNextFileA(dlls_find_handle, &dlls_find_data));
+            FindClose(dlls_find_handle);
+        }
+        
+        // Also embed all *.dll files from DLLs directory (needed for tkinter: tcl86t.dll, tk86t.dll)
+        snprintf(dlls_search_path, sizeof(dlls_search_path), "%s\\*.dll", dlls_dir);
+        dlls_find_handle = FindFirstFileA(dlls_search_path, &dlls_find_data);
+        
+        if (dlls_find_handle != INVALID_HANDLE_VALUE) {
+            do {
+                char dll_path[1024];
+                snprintf(dll_path, sizeof(dll_path), "%s\\%s", dlls_dir, dlls_find_data.cFileName);
+                
+                struct stat dll_stat;
+                if (stat(dll_path, &dll_stat) == 0) {
+                    FILE* dll_file = fopen(dll_path, "rb");
+                    if (dll_file) {
+                        // Store with DLLs\ prefix to maintain directory structure
+                        char dll_name[256];
+                        snprintf(dll_name, sizeof(dll_name), "DLLs\\%s", dlls_find_data.cFileName);
+                        
+                        uint32_t name_len = (uint32_t)strlen(dll_name);
+                        fwrite(&name_len, sizeof(name_len), 1, output_file);
+                        fwrite(dll_name, 1, name_len, output_file);
+                        
+                        uint32_t file_size = (uint32_t)dll_stat.st_size;
+                        fwrite(&file_size, sizeof(file_size), 1, output_file);
+                        
+                        char buffer[8192];
+                        size_t bytes_read;
+                        while ((bytes_read = fread(buffer, 1, sizeof(buffer), dll_file)) > 0) {
+                            fwrite(buffer, 1, bytes_read, output_file);
+                        }
+                        
+                        fclose(dll_file);
+                        total_size += dll_stat.st_size;
+                        files_embedded++;
+                    }
+                }
+            } while (FindNextFileA(dlls_find_handle, &dlls_find_data));
+            FindClose(dlls_find_handle);
         }
     }
     
@@ -445,5 +512,85 @@ static ub_result_t python_embed_windows_runtime(const char* python_dir, FILE* ou
            files_embedded, total_size / (1024.0 * 1024.0));
     
     return UB_SUCCESS;
+}
+
+// Recursive function to embed entire directory trees (for complete Python stdlib and site-packages)
+static void python_embed_directory_recursive(const char* dir_path, const char* base_python_dir, FILE* output_file, size_t* total_size, int* files_embedded) {
+    WIN32_FIND_DATAA find_data;
+    HANDLE find_handle;
+    char search_path[2048];
+    
+    snprintf(search_path, sizeof(search_path), "%s\\*", dir_path);
+    find_handle = FindFirstFileA(search_path, &find_data);
+    
+    if (find_handle == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    
+    do {
+        // Skip . and .. directories
+        if (strcmp(find_data.cFileName, ".") == 0 || strcmp(find_data.cFileName, "..") == 0) {
+            continue;
+        }
+        
+        char full_path[2048];
+        snprintf(full_path, sizeof(full_path), "%s\\%s", dir_path, find_data.cFileName);
+        
+        struct stat st;
+        if (stat(full_path, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                // Skip __pycache__ directories and other cache directories
+                if (strstr(find_data.cFileName, "__pycache__") || 
+                    strstr(find_data.cFileName, ".egg-info") ||
+                    strstr(find_data.cFileName, ".dist-info")) {
+                    continue;
+                }
+                
+                // Recursively embed subdirectory
+                python_embed_directory_recursive(full_path, base_python_dir, output_file, total_size, files_embedded);
+            } else {
+                // Skip certain file types that aren't needed at runtime
+                const char* filename_lower = find_data.cFileName;
+                if (strstr(filename_lower, ".pyc") ||      // Compiled bytecode (will be regenerated)
+                    strstr(filename_lower, ".pyo") ||      // Optimized bytecode
+                    strstr(filename_lower, ".exe") ||      // Skip executables inside packages
+                    strstr(filename_lower, ".pdb") ||      // Debug symbols
+                    strstr(filename_lower, ".lib") ||      // Static libraries
+                    strstr(filename_lower, ".exp")) {      // Export files
+                    continue;
+                }
+                
+                // Calculate relative path from Python base directory
+                const char* relative_path = full_path;
+                if (strncmp(full_path, base_python_dir, strlen(base_python_dir)) == 0) {
+                    relative_path = full_path + strlen(base_python_dir);
+                    if (relative_path[0] == '\\') relative_path++; // Skip leading backslash
+                }
+                
+                // Embed the file
+                FILE* file = fopen(full_path, "rb");
+                if (file) {
+                    uint32_t name_len = (uint32_t)strlen(relative_path);
+                    fwrite(&name_len, sizeof(name_len), 1, output_file);
+                    fwrite(relative_path, 1, name_len, output_file);
+                    
+                    uint32_t file_size = (uint32_t)st.st_size;
+                    fwrite(&file_size, sizeof(file_size), 1, output_file);
+                    
+                    char buffer[8192];
+                    size_t bytes_read;
+                    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+                        fwrite(buffer, 1, bytes_read, output_file);
+                    }
+                    
+                    fclose(file);
+                    *total_size += st.st_size;
+                    (*files_embedded)++;
+                }
+            }
+        }
+    } while (FindNextFileA(find_handle, &find_data));
+    
+    FindClose(find_handle);
 }
 #endif
