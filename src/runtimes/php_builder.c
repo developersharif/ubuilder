@@ -390,6 +390,11 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
 static ub_result_t php_embed_extensions(FILE* output_file) {
     // Get PHP extension directory using php-config or default path
     char ext_dir[1024];
+    
+#ifdef PLATFORM_WINDOWS
+    // On Windows, try to get extension directory from registry or use default
+    strcpy(ext_dir, "C:\\php\\ext");  // Default Windows PHP extension path
+#else
     FILE* php_config = popen("php-config --extension-dir 2>/dev/null", "r");
     if (php_config && fgets(ext_dir, sizeof(ext_dir), php_config)) {
         // Remove newline
@@ -400,8 +405,13 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
         // Fallback to common paths
         strcpy(ext_dir, "/usr/lib/php/20240924");
     }
+#endif
     
+#ifdef PLATFORM_WINDOWS
     printf("Embedding ALL available PHP extensions from: %s (for future use)\n", ext_dir);
+#else
+    printf("Embedding ALL available PHP extensions from: %s (for future use)\n", ext_dir);
+#endif
     
     // Write marker for extension section
     const char* ext_marker = "PHP_EXTENSIONS_START";
@@ -411,8 +421,54 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
     
     int extensions_embedded = 0;
     
-    // Scan extension directory and embed ALL .so files 
+    // Scan extension directory and embed ALL extension files
     // They will be available but not automatically loaded to prevent conflicts
+#ifdef PLATFORM_WINDOWS
+    // On Windows, scan for .dll files in ext directory
+    WIN32_FIND_DATAA find_data;
+    HANDLE find_handle;
+    char search_path[1024];
+    
+    snprintf(search_path, sizeof(search_path), "%s\\*.dll", ext_dir);
+    find_handle = FindFirstFileA(search_path, &find_data);
+    
+    if (find_handle != INVALID_HANDLE_VALUE) {
+        do {
+            char ext_path[1024];
+            snprintf(ext_path, sizeof(ext_path), "%s\\%s", ext_dir, find_data.cFileName);
+            
+            struct stat st;
+            if (stat(ext_path, &st) == 0) {
+                FILE* ext_file = fopen(ext_path, "rb");
+                if (ext_file) {
+                    printf("  Embedding extension: %s (%.2f KB)\n", 
+                           find_data.cFileName, st.st_size / 1024.0);
+                    
+                    // Write extension filename length and name
+                    uint32_t name_len = (uint32_t)strlen(find_data.cFileName);
+                    fwrite(&name_len, sizeof(name_len), 1, output_file);
+                    fwrite(find_data.cFileName, 1, name_len, output_file);
+                    
+                    // Write extension file size
+                    uint32_t ext_size = st.st_size;
+                    fwrite(&ext_size, sizeof(ext_size), 1, output_file);
+                    
+                    // Write extension content
+                    char buffer[8192];
+                    size_t bytes_read;
+                    while ((bytes_read = fread(buffer, 1, sizeof(buffer), ext_file)) > 0) {
+                        fwrite(buffer, 1, bytes_read, output_file);
+                    }
+                    
+                    fclose(ext_file);
+                    extensions_embedded++;
+                }
+            }
+        } while (FindNextFileA(find_handle, &find_data));
+        FindClose(find_handle);
+    }
+#else
+    // On Unix-like systems, scan for .so files
     DIR* dir = opendir(ext_dir);
     if (dir) {
         struct dirent* entry;
@@ -453,6 +509,7 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
         }
         closedir(dir);
     }
+#endif
     
     // Write end marker (empty name)
     uint32_t end_marker = 0;
