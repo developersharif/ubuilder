@@ -375,6 +375,9 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
     strcat(php_ini_content, "error_reporting = E_ALL & ~E_WARNING & ~E_NOTICE\n");
     strcat(php_ini_content, "display_errors = On\n");
     strcat(php_ini_content, "log_errors = Off\n");
+    strcat(php_ini_content, "\n; Enable FFI extension for GUI applications\n");
+    strcat(php_ini_content, "extension=ffi\n");
+    strcat(php_ini_content, "ffi.enable=true\n");
     strcat(php_ini_content, "\n; EXTENSIONS EMBEDDED BUT NOT LOADED\n");
     strcat(php_ini_content, "; All available extensions from build machine are embedded in this executable\n");
     strcat(php_ini_content, "; They are not automatically loaded to prevent compatibility issues\n");
