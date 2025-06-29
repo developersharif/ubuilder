@@ -593,7 +593,10 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
         } else {
             // Check if it's a PHP file or other relevant file
             const char* ext = strrchr(find_data.cFileName, '.');
-            if (ext && (strcmp(ext, ".php") == 0 || strcmp(ext, ".json") == 0 || strcmp(ext, ".txt") == 0)) {
+            if (ext && (strcmp(ext, ".php") == 0 || strcmp(ext, ".json") == 0 || strcmp(ext, ".txt") == 0 || 
+                       strcmp(ext, ".dll") == 0 || strcmp(ext, ".exe") == 0 || strcmp(ext, ".pdb") == 0 ||
+                       strcmp(ext, ".lib") == 0 || strcmp(ext, ".xml") == 0 || strcmp(ext, ".ini") == 0 ||
+                       strcmp(ext, ".so") == 0 || strcmp(ext, ".dylib") == 0)) {
                 // Calculate relative path from project root
                 const char* rel_path = full_path + strlen(base_path);
                 if (*rel_path == '\\') rel_path++; // Skip leading backslash
@@ -623,7 +626,10 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
         } else if (S_ISREG(st.st_mode)) {
             // Check if it's a PHP file or other relevant file
             const char* ext = strrchr(entry->d_name, '.');
-            if (ext && (strcmp(ext, ".php") == 0 || strcmp(ext, ".json") == 0 || strcmp(ext, ".txt") == 0)) {
+            if (ext && (strcmp(ext, ".php") == 0 || strcmp(ext, ".json") == 0 || strcmp(ext, ".txt") == 0 ||
+                       strcmp(ext, ".so") == 0 || strcmp(ext, ".dylib") == 0 || strcmp(ext, ".a") == 0 ||
+                       strcmp(ext, ".xml") == 0 || strcmp(ext, ".ini") == 0 || strcmp(ext, ".conf") == 0 ||
+                       strcmp(ext, ".dll") == 0)) {
                 // Calculate relative path from project root
                 const char* rel_path = full_path + strlen(base_path);
                 if (*rel_path == '/') rel_path++; // Skip leading slash
