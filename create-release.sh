@@ -39,9 +39,9 @@ fi
 VERSION="$1"
 MESSAGE="${2:-Release $VERSION}"
 
-# Validate version format
-if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    print_error "Version must be in format v#.#.# (e.g., v2.0.2)"
+# Validate version format (now supports alpha/beta)
+if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9]+)?$ ]]; then
+    print_error "Version must be in format v#.#.# or v#.#-suffix (e.g., v2.0.2, v2.0-alpha, v1.0.0-beta)"
     exit 1
 fi
 

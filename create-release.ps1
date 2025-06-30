@@ -30,9 +30,9 @@ function Write-Error {
     Write-Host "[ERROR] $Message" -ForegroundColor Red
 }
 
-# Validate version format
-if ($Version -notmatch '^v\d+\.\d+\.\d+$') {
-    Write-Error "Version must be in format v#.#.# (e.g., v2.0.2)"
+# Validate version format (now supports alpha/beta)
+if ($Version -notmatch '^v\d+\.\d+(\.\d+)?(-[a-zA-Z0-9]+)?$') {
+    Write-Error "Version must be in format v#.#.# or v#.#-suffix (e.g., v2.0.2, v2.0-alpha, v1.0.0-beta)"
     exit 1
 }
 
