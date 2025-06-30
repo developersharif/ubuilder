@@ -6,6 +6,7 @@
     #define _CRT_SECURE_NO_WARNINGS
     #pragma warning(disable: 4100)  // Unreferenced formal parameter
     #pragma warning(disable: 4267)  // Conversion from size_t to smaller type
+    #pragma warning(disable: 4996)  // POSIX function name warnings
 #endif
 
 #include <stdint.h>

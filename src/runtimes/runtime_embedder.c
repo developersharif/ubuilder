@@ -18,6 +18,19 @@
     #define S_ISLNK(mode) (0)  // No symbolic links concept on Windows like Unix
     #define unlink _unlink
     #define chmod _chmod
+    // Define access mode constants for Windows
+    #ifndef F_OK
+        #define F_OK 0  // Test for existence
+    #endif
+    #ifndef R_OK
+        #define R_OK 4  // Test for read permission
+    #endif
+    #ifndef W_OK
+        #define W_OK 2  // Test for write permission
+    #endif
+    #ifndef X_OK
+        #define X_OK 1  // Test for execute permission
+    #endif
     #ifdef _MSC_VER
         typedef ptrdiff_t ssize_t;  // Define ssize_t for MSVC
         #define strdup _strdup
