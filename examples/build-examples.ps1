@@ -108,6 +108,24 @@ function Build-UBuilder {
     
     Set-Location $ProjectRoot
     
+    # Check if UBuilder already exists and is recent
+    $UBuilderExe = Join-Path $BuildDir "src\Release\ubuilder.exe"
+    if (-not (Test-Path $UBuilderExe)) {
+        $UBuilderExe = Join-Path $BuildDir "src\ubuilder.exe"
+    }
+    
+    if (Test-Path $UBuilderExe) {
+        $exeTime = (Get-Item $UBuilderExe).LastWriteTime
+        $sourceTime = (Get-ChildItem -Path "src" -Recurse -Include "*.c", "*.h" | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
+        
+        if ($exeTime -gt $sourceTime) {
+            Write-Log "UBuilder executable is up to date, skipping rebuild..." -Level Success
+            return $UBuilderExe
+        } else {
+            Write-Log "Source files are newer, rebuilding..."
+        }
+    }
+    
     if (Test-Path $BuildDir) {
         Write-Log "Cleaning previous build..."
         Remove-Item -Recurse -Force $BuildDir
@@ -190,14 +208,50 @@ function Build-Example {
     
     # Build the example
     Write-Log "Creating executable for $ExampleName (runtime: $Runtime)..."
+    
+    # Use proper output capture to avoid mixing build output with error messages
+    $buildOutput = ""
+    $buildError = ""
+    $exitCode = 0
+    
     try {
-        & $UBuilderExe --project-dir="$ExampleDir" --runtime=$Runtime --output="$OutputExecutable"
-        if ($LASTEXITCODE -ne 0) {
-            throw "UBuilder execution failed"
+        # Capture both stdout and stderr separately
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $UBuilderExe
+        $psi.Arguments = "--project-dir=`"$ExampleDir`" --runtime=$Runtime --output=`"$OutputExecutable`""
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.WorkingDirectory = $PWD.Path
+        
+        $process = [System.Diagnostics.Process]::Start($psi)
+        
+        # Read output asynchronously to prevent deadlocks
+        $buildOutput = $process.StandardOutput.ReadToEnd()
+        $buildError = $process.StandardError.ReadToEnd()
+        
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+        
+        if ($exitCode -ne 0) {
+            Write-Log "UBuilder failed with exit code $exitCode" -Level Error
+            if ($buildError) {
+                Write-Log "Error output: $buildError" -Level Error
+            }
+            if ($buildOutput) {
+                Write-Log "Build output: $buildOutput" -Level Error
+            }
+            return @{ Success = $false; Reason = "BuildError" }
         }
+        
+        # Success - show any relevant output
+        if ($buildOutput -and $buildOutput.Trim()) {
+            Write-Verbose "Build output: $buildOutput"
+        }
+        
     }
     catch {
-        Write-Log "Failed to build $ExampleName`: $_" -Level Error
+        Write-Log "Failed to execute UBuilder: $_" -Level Error
         return @{ Success = $false; Reason = "BuildError" }
     }
     

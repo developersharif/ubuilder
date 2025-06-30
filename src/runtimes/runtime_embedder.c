@@ -668,7 +668,6 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
     }
     
     int files_extracted = 0;
-    int files_skipped = 0;
     
     // Create a persistent cache directory based on UBuilder version/hash
     char cache_dir[1024];
@@ -684,11 +683,11 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
     snprintf(cache_dir, sizeof(cache_dir), "%s\\PythonRuntime", cache_root);
     
     // Create cache directories
-    char mkdir_cmd[1024];
-    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir \"%s\" 2>nul", cache_root);
-    system(mkdir_cmd);
-    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir \"%s\" 2>nul", cache_dir);
-    system(mkdir_cmd);
+    char cache_mkdir_cmd[1024];
+    snprintf(cache_mkdir_cmd, sizeof(cache_mkdir_cmd), "mkdir \"%s\" 2>nul", cache_root);
+    system(cache_mkdir_cmd);
+    snprintf(cache_mkdir_cmd, sizeof(cache_mkdir_cmd), "mkdir \"%s\" 2>nul", cache_dir);
+    system(cache_mkdir_cmd);
     
     // Check if cache is already populated (quick check for python.exe)
     char python_exe_check[1024];
@@ -772,9 +771,9 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
         if (last_slash && last_slash != dir_path) {
             *last_slash = '\0';
             // Create directory recursively 
-            char mkdir_cmd[1024];
-            snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir \"%s\" 2>nul", dir_path);
-            system(mkdir_cmd);
+            char extract_mkdir_cmd[1024];
+            snprintf(extract_mkdir_cmd, sizeof(extract_mkdir_cmd), "mkdir \"%s\" 2>nul", dir_path);
+            system(extract_mkdir_cmd);
         }
         free(dir_path);
         
