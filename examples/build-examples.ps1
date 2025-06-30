@@ -362,9 +362,31 @@ function Test-Example {
     
     Write-Host "--- Output from $ExampleName ---" -ForegroundColor Cyan
     try {
-        & $Executable
-        if ($LASTEXITCODE -ne 0) {
-            throw "Execution failed with exit code $LASTEXITCODE"
+        # Create a process with timeout for example execution
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Executable
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        
+        $process = [System.Diagnostics.Process]::Start($psi)
+        
+        # Set timeout for example execution (5 minutes max)
+        $timeoutMs = 5 * 60 * 1000
+        if ($process.WaitForExit($timeoutMs)) {
+            $output = $process.StandardOutput.ReadToEnd()
+            $error = $process.StandardError.ReadToEnd()
+            
+            if ($output) { Write-Host $output }
+            if ($error) { Write-Host $error -ForegroundColor Red }
+            
+            if ($process.ExitCode -ne 0) {
+                throw "Execution failed with exit code $($process.ExitCode)"
+            }
+        } else {
+            Write-Host "Example execution timed out after 5 minutes" -ForegroundColor Red
+            $process.Kill()
+            throw "Execution timed out"
         }
     }
     catch {

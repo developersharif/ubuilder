@@ -122,13 +122,13 @@ if !RUN_SUCCESS_COUNT! gtr 0 (
 if !RUN_SUCCESS_COUNT! equ !BUILT_COUNT! (
     if !BUILT_COUNT! gtr 0 (
         echo.
-        echo 🎉 ALL BUILDS AND TESTS SUCCESSFUL! 🎉
+        echo ALL BUILDS AND TESTS SUCCESSFUL!
         echo All !BUILT_COUNT! example(s) built and ran successfully!
         exit /b 0
     )
 ) else (
     echo.
-    echo ❌ Some examples failed to build or run properly
+    echo Some examples failed to build or run properly
     exit /b 1
 )
 
