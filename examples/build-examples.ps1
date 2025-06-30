@@ -285,11 +285,36 @@ function Build-Example {
         
         $process = [System.Diagnostics.Process]::Start($psi)
         
-        # Read output asynchronously to prevent deadlocks
+        # Add timeout for long-running builds (especially Python)
+        $timeoutMinutes = if ($Runtime -eq "python") { 15 } else { 10 }
+        $timeoutMs = $timeoutMinutes * 60 * 1000
+        
+        Write-Log "Build timeout set to $timeoutMinutes minutes for $Runtime runtime..." -Level Info
+        
+        # Wait for process with timeout and periodic progress updates
+        $completed = $false
+        $startTime = Get-Date
+        
+        while (-not $completed) {
+            if ($process.WaitForExit(30000)) {  # Wait 30 seconds at a time
+                $completed = $true
+            } else {
+                $elapsed = (Get-Date) - $startTime
+                if ($elapsed.TotalMilliseconds -gt $timeoutMs) {
+                    Write-Log "Build timed out after $timeoutMinutes minutes" -Level Error
+                    $process.Kill()
+                    return @{ Success = $false; Reason = "Timeout" }
+                }
+                
+                # Show progress for long builds
+                $elapsedMinutes = [math]::Round($elapsed.TotalMinutes, 1)
+                Write-Log "Build still running... ($elapsedMinutes minutes elapsed)" -Level Info
+            }
+        }
+        
+        # Read output after process completes
         $buildOutput = $process.StandardOutput.ReadToEnd()
         $buildError = $process.StandardError.ReadToEnd()
-        
-        $process.WaitForExit()
         $exitCode = $process.ExitCode
         
         if ($exitCode -ne 0) {

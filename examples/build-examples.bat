@@ -105,13 +105,13 @@ echo  Build and Test Summary
 echo ==========================================
 echo.
 
-echo Total examples built: %BUILT_COUNT%
-echo Skipped (missing runtime): %SKIPPED_COUNT%
-echo Build failures: %FAILED_COUNT%
-echo Successfully ran: %RUN_SUCCESS_COUNT%
-echo Runtime failures: %RUN_FAILED_COUNT%
+echo Total examples built: !BUILT_COUNT!
+echo Skipped (missing runtime): !SKIPPED_COUNT!
+echo Build failures: !FAILED_COUNT!
+echo Successfully ran: !RUN_SUCCESS_COUNT!
+echo Runtime failures: !RUN_FAILED_COUNT!
 
-if %RUN_SUCCESS_COUNT% gtr 0 (
+if !RUN_SUCCESS_COUNT! gtr 0 (
     echo.
     echo Successfully built executables:
     for %%F in ("%OUTPUT_DIR%\*.exe") do (
@@ -119,11 +119,13 @@ if %RUN_SUCCESS_COUNT% gtr 0 (
     )
 )
 
-if %RUN_SUCCESS_COUNT% equ %BUILT_COUNT% if %BUILT_COUNT% gtr 0 (
-    echo.
-    echo 🎉 ALL BUILDS AND TESTS SUCCESSFUL! 🎉
-    echo All %BUILT_COUNT% example(s) built and ran successfully!
-    exit /b 0
+if !RUN_SUCCESS_COUNT! equ !BUILT_COUNT! (
+    if !BUILT_COUNT! gtr 0 (
+        echo.
+        echo 🎉 ALL BUILDS AND TESTS SUCCESSFUL! 🎉
+        echo All !BUILT_COUNT! example(s) built and ran successfully!
+        exit /b 0
+    )
 ) else (
     echo.
     echo ❌ Some examples failed to build or run properly
