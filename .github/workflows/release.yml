@@ -84,18 +84,103 @@ jobs:
         run: |
           Write-Host "Installing Windows runtime dependencies..." -ForegroundColor Cyan
           
-          # Install via winget
-          winget install --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements
-          winget install --id OpenJS.NodeJS --silent --accept-package-agreements --accept-source-agreements
+          # Function to safely run commands
+          function Invoke-SafeCommand {
+            param([string]$Command, [array]$Args, [string]$Name)
+            try {
+              $output = & $Command @Args 2>&1
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "✓ $Name installed/updated successfully" -ForegroundColor Green
+              } else {
+                Write-Host "⚠ $Name returned exit code $LASTEXITCODE (may already be installed)" -ForegroundColor Yellow
+              }
+            } catch {
+              Write-Host "⚠ $Name installation failed or already installed: $_" -ForegroundColor Yellow
+            }
+          }
           
-          # Install PHP via Chocolatey
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          choco install php -y --force
+          # Try winget first (may not be available in all runners)
+          if (Get-Command winget -ErrorAction SilentlyContinue) {
+            Write-Host "Using winget for installations..." -ForegroundColor Cyan
+            Invoke-SafeCommand "winget" @("install", "--id", "Python.Python.3.11", "--silent", "--accept-package-agreements", "--accept-source-agreements") "Python 3.11"
+            Invoke-SafeCommand "winget" @("install", "--id", "OpenJS.NodeJS", "--silent", "--accept-package-agreements", "--accept-source-agreements") "Node.js"
+          } else {
+            Write-Host "Winget not available, using Chocolatey..." -ForegroundColor Yellow
+          }
+          
+          # Install Chocolatey if not available
+          if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing Chocolatey..." -ForegroundColor Yellow
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          }
+          
+          # Install missing runtimes via Chocolatey
+          if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing Python via Chocolatey..." -ForegroundColor Yellow
+            choco install python --version=3.11.0 -y --force
+          }
+          
+          if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing Node.js via Chocolatey..." -ForegroundColor Yellow
+            choco install nodejs -y --force
+          }
+          
+          if (-not (Get-Command php -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing PHP via Chocolatey..." -ForegroundColor Yellow
+            choco install php -y --force
+          }
           
           # Refresh PATH
+          Write-Host "Refreshing environment PATH..." -ForegroundColor Cyan
           $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+          
+          Write-Host "Dependencies installation completed!" -ForegroundColor Green
+
+      # Verify Windows runtime installations
+      - name: Verify Windows runtime installations
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Write-Host "=== Runtime Verification ===" -ForegroundColor Cyan
+          
+          function Test-Runtime {
+            param([string]$Command, [string]$Name, [array]$VersionArgs = @("--version"))
+            Write-Host "Testing $Name..." -ForegroundColor Yellow
+            try {
+              $version = & $Command @VersionArgs 2>&1 | Select-Object -First 1
+              Write-Host "✓ $Name available: $version" -ForegroundColor Green
+              return $true
+            } catch {
+              Write-Host "✗ $Name not found or not working" -ForegroundColor Red
+              return $false
+            }
+          }
+          
+          $results = @{
+            Python = $false
+            NodeJS = $false
+            PHP = $false
+            CMake = $false
+          }
+          $results.Python = Test-Runtime "python" "Python"
+          if (-not $results.Python) {
+            $results.Python = Test-Runtime "python3" "Python3"
+          }
+          $results.NodeJS = Test-Runtime "node" "Node.js"
+          $results.PHP = Test-Runtime "php" "PHP"
+          $results.CMake = Test-Runtime "cmake" "CMake"
+          
+          Write-Host "`n=== Installation Summary ===" -ForegroundColor Cyan
+          $results.GetEnumerator() | ForEach-Object {
+            $status = if ($_.Value) { "✓" } else { "✗" }
+            $color = if ($_.Value) { "Green" } else { "Red" }
+            Write-Host "$($_.Key): $status" -ForegroundColor $color
+          }
+          
+          $totalSuccess = ($results.Values | Where-Object { $_ }).Count
+          Write-Host "`nSuccessfully verified: $totalSuccess/4 runtimes" -ForegroundColor $(if ($totalSuccess -ge 3) { "Green" } else { "Yellow" })
 
       # macOS-specific setup
       - name: Install macOS dependencies
