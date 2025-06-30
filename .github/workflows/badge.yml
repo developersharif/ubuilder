@@ -1,0 +1,26 @@
+name: Update Build Status
+
+on:
+  workflow_run:
+    workflows: ["UBuilder Cross-Platform CI"]
+    types:
+      - completed
+
+jobs:
+  update-status:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion != 'cancelled'
+    
+    steps:
+      - name: Log Build Status
+        run: |
+          echo "Build Status: ${{ github.event.workflow_run.conclusion }}"
+          echo "Workflow: ${{ github.event.workflow_run.name }}"
+          echo "Branch: ${{ github.event.workflow_run.head_branch }}"
+          echo "Commit: ${{ github.event.workflow_run.head_sha }}"
+          
+          if [ "${{ github.event.workflow_run.conclusion }}" = "success" ]; then
+            echo "✅ All platform builds succeeded!"
+          else
+            echo "❌ Some platform builds failed"
+          fi

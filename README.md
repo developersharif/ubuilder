@@ -1,7 +1,11 @@
 # UBuilder - Universal Executable Framework
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
+[![CI](https://github.com/developersharif/ubuilder/workflows/UBuilder%20Cross-Platform%20CI/badge.svg)](https://github.com/developersharif/ubuilder/actions)
+[![Build Scripts](https://github.com/developersharif/ubuilder/workflows/Build%20Scripts%20Validation/badge.svg)](https://github.com/developersharif/ubuilder/actions)
+[![Linux](https://img.shields.io/badge/platform-Linux-blue.svg)]()
+[![macOS](https://img.shields.io/badge/platform-macOS-blue.svg)]()
+[![Windows](https://img.shields.io/badge/platform-Windows-blue.svg)]()
 [![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)]()
 
 > **Transform your Python, PHP, and Node.js applications into truly portable, dependency-free executables.**
@@ -27,18 +31,46 @@ UBuilder is a cross-platform C/C++ framework that packages dynamic language appl
 
 ### Build UBuilder
 
-```bash
-# Clone the repository
-git clone https://github.com/developersharif/ubuilder.git
-cd ubuilder
+#### Quick Start (All Platforms)
 
-# Build with CMake
+```bash
+# Universal build command (detects platform automatically)
+./build-all.sh
+
+# Or build specific components
 mkdir build && cd build
 cmake .. && make
-
-# Verify installation
 ./src/ubuilder --version
 ```
+
+#### Platform-Specific Build Commands
+
+**Linux/Unix:**
+
+```bash
+./examples/build-examples-linux.sh
+```
+
+**macOS:**
+
+```bash
+./examples/build-examples-macos.sh
+```
+
+**Windows:**
+
+```batch
+# Command Prompt
+examples\build-examples.bat
+
+# PowerShell
+examples\build-examples.ps1
+
+# WSL/MSYS2/Git Bash
+./examples/build-examples.sh
+```
+
+See [examples/BUILD_SYSTEM.md](examples/BUILD_SYSTEM.md) for detailed cross-platform build instructions.
 
 ### Create Your First Portable Executable
 

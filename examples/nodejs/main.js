@@ -6,6 +6,8 @@ function main() {
     
     console.log(`Node.js version: ${process.version}`);
     console.log(`Arguments: ${process.argv.join(" ")}`);
+    console.log(`Current working directory: ${process.cwd()}`);
+    console.log(`Executable path: ${process.execPath}`);
 }
 
 if (require.main === module) {

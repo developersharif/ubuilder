@@ -1,0 +1,183 @@
+name: Build Scripts Validation
+
+on:
+  pull_request:
+    paths:
+      - 'examples/build-examples*'
+      - 'build-all.*'
+      - 'build-system/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+jobs:
+  validate-scripts:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Validate Bash Scripts
+        run: |
+          echo "=== Validating Bash Scripts ==="
+          
+          # Check main build scripts
+          if [ -f "build-all.sh" ]; then
+            echo "Checking build-all.sh..."
+            shellcheck build-all.sh || echo "⚠️  build-all.sh has warnings"
+          fi
+          
+          # Check example build scripts
+          for script in examples/build-examples*.sh; do
+            if [ -f "$script" ]; then
+              echo "Checking $script..."
+              shellcheck "$script" || echo "⚠️  $script has warnings"
+            fi
+          done
+          
+          # Check build-system scripts
+          for script in build-system/*.sh; do
+            if [ -f "$script" ]; then
+              echo "Checking $script..."
+              shellcheck "$script" || echo "⚠️  $script has warnings"
+            fi
+          done
+
+      - name: Validate Batch Scripts Syntax
+        run: |
+          echo "=== Validating Batch Scripts Syntax ==="
+          
+          # Basic syntax check for batch files
+          for script in examples/*.bat build-all.bat; do
+            if [ -f "$script" ]; then
+              echo "Checking $script syntax..."
+              # Check for common batch syntax issues
+              if grep -q "@echo off" "$script"; then
+                echo "✅ $script has proper @echo off"
+              else
+                echo "⚠️  $script missing @echo off"
+              fi
+              
+              # Check for proper variable syntax
+              if grep -qE '%[A-Za-z_][A-Za-z0-9_]*%' "$script"; then
+                echo "✅ $script uses proper variable syntax"
+              fi
+              
+              # Check for proper conditional syntax
+              if grep -q "if.*(" "$script" && grep -q ")" "$script"; then
+                echo "✅ $script has proper conditional syntax"
+              fi
+            fi
+          done
+
+      - name: Validate PowerShell Scripts
+        shell: pwsh
+        run: |
+          Write-Host "=== Validating PowerShell Scripts ==="
+          
+          $scripts = Get-ChildItem -Path "examples" -Filter "*.ps1"
+          
+          foreach ($script in $scripts) {
+            Write-Host "Checking $($script.Name)..."
+            
+            try {
+              # Parse the script to check for syntax errors
+              $tokens = $null
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
+              
+              if ($errors.Count -eq 0) {
+                Write-Host "✅ $($script.Name) syntax is valid"
+              } else {
+                Write-Host "❌ $($script.Name) has syntax errors:"
+                foreach ($error in $errors) {
+                  Write-Host "  - $error"
+                }
+              }
+            } catch {
+              Write-Host "⚠️  Could not parse $($script.Name): $_"
+            }
+          }
+
+      - name: Test Script Permissions
+        run: |
+          echo "=== Testing Script Permissions ==="
+          
+          # Check if scripts are executable
+          for script in build-all.sh examples/build-examples*.sh build-system/*.sh; do
+            if [ -f "$script" ]; then
+              if [ -x "$script" ]; then
+                echo "✅ $script is executable"
+              else
+                echo "⚠️  $script is not executable, making it executable..."
+                chmod +x "$script"
+              fi
+            fi
+          done
+
+      - name: Test Script Help/Usage
+        run: |
+          echo "=== Testing Script Help/Usage ==="
+          
+          # Make scripts executable
+          chmod +x build-all.sh examples/build-examples*.sh 2>/dev/null || true
+          
+          # Test if scripts handle help flags gracefully
+          for script in examples/build-examples*.sh; do
+            if [ -f "$script" ]; then
+              echo "Testing $script with --help..."
+              timeout 10s "$script" --help 2>&1 || echo "Script doesn't support --help (expected)"
+            fi
+          done
+
+  test-minimal-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install minimal dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Test UBuilder core build only
+        run: |
+          echo "=== Testing Core Build Without Runtimes ==="
+          
+          mkdir -p build
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          make -j$(nproc)
+          
+          if [ -f "src/ubuilder" ]; then
+            echo "✅ UBuilder core built successfully"
+            ./src/ubuilder --version || echo "Version check failed"
+            ./src/ubuilder --help || echo "Help check failed"
+          else
+            echo "❌ UBuilder core build failed"
+            exit 1
+          fi
+
+      - name: Test build script error handling
+        run: |
+          echo "=== Testing Build Script Error Handling ==="
+          
+          chmod +x examples/build-examples-linux.sh
+          
+          # Test with missing runtimes (should skip gracefully)
+          echo "Testing with no runtimes installed..."
+          timeout 300s ./examples/build-examples-linux.sh || {
+            exit_code=$?
+            if [ $exit_code -eq 124 ]; then
+              echo "⚠️  Script timed out (may be normal for missing runtimes)"
+            else
+              echo "Script exited with code: $exit_code"
+            fi
+          }

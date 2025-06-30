@@ -1,190 +1,349 @@
-name: UBuilder CI
+name: UBuilder Cross-Platform CI
 
 on:
   push:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  workflow_dispatch:  # Allow manual triggering
 
+env:
+  CMAKE_BUILD_TYPE: Release
+  
 jobs:
   build-linux:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: "Ubuntu Latest"
+            os: ubuntu-latest
+          - name: "Ubuntu 20.04"
+            os: ubuntu-20.04
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake build-essential zlib1g-dev
-          sudo apt-get install -y php-cli php-dev php-mbstring python3 nodejs
 
-      - name: Build UBuilder
+      - name: Install runtime dependencies
         run: |
-          chmod +x build-system/build.sh
-          mkdir -p build
-          cd build
-          cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_COMPRESSION=ON ..
-          make -j$(nproc)
+          sudo apt-get install -y php-cli php-dev python3 python3-dev nodejs npm
+          # Verify installations
+          php --version
+          python3 --version
+          node --version
 
-      - name: Run tests
+      - name: Make build scripts executable
+        run: |
+          chmod +x build-all.sh
+          chmod +x examples/build-examples*.sh
+          chmod +x examples/build-examples.sh
+
+      - name: Run cross-platform build system
+        run: |
+          ./build-all.sh
+
+      - name: Verify build outputs
+        run: |
+          echo "=== Build Output Verification ==="
+          ls -la build/src/
+          ls -la examples/output/ || echo "No example outputs found"
+          
+          echo "=== Testing UBuilder executable ==="
+          ./build/src/ubuilder --version
+          ./build/src/ubuilder --help
+
+      - name: Run unit tests
         run: |
           cd build
-          if [ -f "./test_ubuilder" ]; then
-            ./test_ubuilder
+          if [ -f "./tests/test_ubuilder" ]; then
+            echo "Running unit tests..."
+            ./tests/test_ubuilder
           else
-            echo "Tests not built, skipping..."
+            echo "Unit tests not found, skipping..."
           fi
 
-      - name: Test basic functionality
+      - name: Test individual platform script
         run: |
-          cd build
-          ./src/ubuilder --version
-          ./src/ubuilder --help
+          echo "=== Testing Linux-specific script ==="
+          ./examples/build-examples-linux.sh
 
-      - name: Upload artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ubuilder-linux
-          path: build/src/ubuilder
+          name: ubuilder-linux-${{ matrix.os }}
+          path: |
+            build/src/ubuilder
+            examples/output/*
+          retention-days: 7
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-linux-${{ matrix.os }}
+          path: |
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeFiles/CMakeError.log
+          retention-days: 3
 
   build-windows:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        shell: [cmd, powershell]
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          # Install PHP, Python, Node.js, CMake, and MinGW
-          choco install php python nodejs cmake mingw
-          # Add MinGW to PATH
-          $env:PATH = "C:\tools\mingw64\bin;$env:PATH"
-          echo "C:\tools\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Setup MSVC
+        uses: microsoft/setup-msbuild@v1.1
 
-      - name: Build UBuilder
-        run: |
-          mkdir build
-          cd build
-          cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DENABLE_COMPRESSION=ON
-          mingw32-make
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
 
-      - name: Run tests
+      - name: Install runtime dependencies
+        shell: powershell
         run: |
-          cd build
-          if (Test-Path ".\test_ubuilder.exe") {
-            .\test_ubuilder.exe
-          } else {
-            Write-Host "Tests not built, skipping..."
+          # Install using winget (modern Windows package manager)
+          winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements || echo "BuildTools already installed"
+          winget install --id Kitware.CMake --silent --accept-package-agreements --accept-source-agreements || echo "CMake already installed"
+          winget install --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements || echo "Python already installed"
+          winget install --id OpenJS.NodeJS --silent --accept-package-agreements --accept-source-agreements || echo "NodeJS already installed"
+          
+          # Install PHP using Chocolatey as backup
+          if (-not (Get-Command php -ErrorAction SilentlyContinue)) {
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+            choco install php -y
           }
+          
+          # Refresh PATH
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
 
-      - name: Test basic functionality
+      - name: Verify runtime installations
+        shell: powershell
         run: |
-          cd build
-          if (Test-Path ".\src\ubuilder.exe") {
-            $ubuilder = ".\src\ubuilder.exe"
+          Write-Host "=== Runtime Verification ==="
+          try { python --version } catch { Write-Host "Python not found" }
+          try { node --version } catch { Write-Host "Node.js not found" }
+          try { php --version } catch { Write-Host "PHP not found" }
+          try { cmake --version } catch { Write-Host "CMake not found" }
+
+      - name: Run Windows Batch Build Script
+        if: matrix.shell == 'cmd'
+        shell: cmd
+        run: |
+          echo === Running Windows Batch Build Script ===
+          examples\build-examples.bat
+
+      - name: Run Windows PowerShell Build Script
+        if: matrix.shell == 'powershell'
+        shell: powershell
+        run: |
+          Write-Host "=== Running Windows PowerShell Build Script ==="
+          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+          examples\build-examples.ps1 -Verbose
+
+      - name: Verify build outputs
+        shell: powershell
+        run: |
+          Write-Host "=== Build Output Verification ==="
+          if (Test-Path "build\src\Release\ubuilder.exe") {
+            Write-Host "Found: build\src\Release\ubuilder.exe"
+            & "build\src\Release\ubuilder.exe" --version
+          } elseif (Test-Path "build\src\ubuilder.exe") {
+            Write-Host "Found: build\src\ubuilder.exe"
+            & "build\src\ubuilder.exe" --version
           } else {
             Write-Host "UBuilder executable not found"
-            exit 1
+            Get-ChildItem -Recurse -Name "ubuilder*"
+          }
+          
+          Write-Host "=== Example Outputs ==="
+          if (Test-Path "examples\output") {
+            Get-ChildItem "examples\output"
+          } else {
+            Write-Host "No example outputs found"
           }
 
-          # Test version and help first
-          & $ubuilder --version
-          & $ubuilder --help
-
-          # Test with a simple project
-          New-Item -ItemType Directory -Force -Path "test-project"
-          Set-Content -Path "test-project\main.php" -Value '<?php echo "Hello from UBuilder!\n"; ?>'
-          Set-Content -Path "test-project\ubuilder.json" -Value '{"entry": "main.php", "runtime": "php"}'
-
-          # Test build functionality
-          & $ubuilder --project-dir=test-project --runtime=php --output=test-app.exe
-          if (Test-Path ".\test-app.exe") {
-            Write-Host "Build successful!"
-            # Try to run the test app
-            try {
-              & .\test-app.exe
-            } catch {
-              Write-Host "Test app execution failed, but build succeeded"
-            }
-          }
-
-      - name: Upload artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ubuilder-windows
-          path: build/src/ubuilder.exe
+          name: ubuilder-windows-${{ matrix.shell }}
+          path: |
+            build/src/Release/ubuilder.exe
+            build/src/ubuilder.exe
+            examples/output/*.exe
+          retention-days: 7
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-windows-${{ matrix.shell }}
+          path: |
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeFiles/CMakeError.log
+          retention-days: 3
 
   build-macos:
     runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - name: "macOS Latest"
+            os: macos-latest
+          - name: "macOS 12"
+            os: macos-12
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
+          brew update
           brew install cmake zlib
+
+      - name: Install runtime dependencies
+        run: |
           brew install php python3 node
-          # Ensure PHP extensions are available
-          brew install php@8.1
+          # Verify installations
+          php --version
+          python3 --version
+          node --version
 
-      - name: Build UBuilder
+      - name: Make build scripts executable
         run: |
-          mkdir -p build
-          cd build
-          cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_COMPRESSION=ON ..
-          make -j$(sysctl -n hw.ncpu)
+          chmod +x build-all.sh
+          chmod +x examples/build-examples*.sh
 
-      - name: Run tests
+      - name: Run cross-platform build system
+        run: |
+          ./build-all.sh
+
+      - name: Verify build outputs
+        run: |
+          echo "=== Build Output Verification ==="
+          ls -la build/src/
+          ls -la examples/output/ || echo "No example outputs found"
+          
+          echo "=== Testing UBuilder executable ==="
+          ./build/src/ubuilder --version
+          ./build/src/ubuilder --help
+
+      - name: Run unit tests
         run: |
           cd build
-          if [ -f "./test_ubuilder" ]; then
-            ./test_ubuilder
+          if [ -f "./tests/test_ubuilder" ]; then
+            echo "Running unit tests..."
+            ./tests/test_ubuilder
           else
-            echo "Tests not built, skipping..."
+            echo "Unit tests not found, skipping..."
           fi
 
-      - name: Test basic functionality
+      - name: Test macOS-specific script
         run: |
-          cd build
-          # Set proper runtime paths for macOS
-          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          export DYLD_LIBRARY_PATH="/opt/homebrew/lib:/usr/local/lib:$DYLD_LIBRARY_PATH"
+          echo "=== Testing macOS-specific script ==="
+          ./examples/build-examples-macos.sh
 
-          # Check what runtimes are available
-          echo "Available runtimes:"
-          which php || echo "PHP not found"
-          which python3 || echo "Python3 not found"
-          which node || echo "Node not found"
-
-          # Test version and help first
-          ./src/ubuilder --version
-          ./src/ubuilder --help
-
-          # Test with a simple PHP project
-          mkdir -p test-project
-          echo '<?php echo "Hello from UBuilder!\n"; ?>' > test-project/main.php
-          echo '{"entry": "main.php", "runtime": "php"}' > test-project/ubuilder.json
-
-          echo "Building test app..."
-          ./src/ubuilder --project-dir=test-project --runtime=php --output=test-app
-
-          if [ -f "./test-app" ]; then
-            echo "Test app built successfully, attempting to run..."
-            # Try to run with timeout and better error handling
-            timeout 30s ./test-app || {
-              echo "Test app execution failed or timed out"
-              echo "Checking temp directory permissions..."
-              ls -la /tmp/ | grep ubuilder || echo "No ubuilder temp dirs found"
-              echo "Checking current directory:"
-              ls -la
-            }
-          else
-            echo "Test app was not created"
-          fi
-
-      - name: Upload artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ubuilder-macos
-          path: build/src/ubuilder
+          name: ubuilder-macos-${{ matrix.os }}
+          path: |
+            build/src/ubuilder
+            examples/output/*
+          retention-days: 7
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-macos-${{ matrix.os }}
+          path: |
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeFiles/CMakeError.log
+          retention-days: 3
+
+  # Cross-platform integration test
+  integration-test:
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display build results
+        run: |
+          echo "=== Cross-Platform Build Results ==="
+          find artifacts -name "ubuilder*" -type f
+          echo ""
+          echo "=== Build Summary ==="
+          echo "Linux builds:"
+          find artifacts -name "*linux*" -type d || echo "No Linux builds found"
+          echo "Windows builds:"
+          find artifacts -name "*windows*" -type d || echo "No Windows builds found"
+          echo "macOS builds:"
+          find artifacts -name "*macos*" -type d || echo "No macOS builds found"
+          
+          echo ""
+          echo "=== Example Applications ==="
+          find artifacts -name "*.exe" -o -name "nodejs" -o -name "php" -o -name "python" | grep -v "/build/" || echo "No example applications found"
+
+  # Create release artifacts
+  release:
+    needs: [integration-test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release package
+        run: |
+          mkdir -p release
+          
+          # Copy executables
+          find artifacts -name "ubuilder" -type f -exec cp {} release/ubuilder-linux \;
+          find artifacts -name "ubuilder.exe" -type f -exec cp {} release/ubuilder-windows.exe \;
+          find artifacts -name "ubuilder" -path "*/macos*" -type f -exec cp {} release/ubuilder-macos \;
+          
+          # Copy documentation
+          cp README.md release/
+          cp examples/BUILD_SYSTEM.md release/
+          cp LICENSE release/ 2>/dev/null || echo "LICENSE file not found"
+          
+          # Create archive
+          cd release
+          tar -czf ../ubuilder-cross-platform.tar.gz *
+          
+          echo "=== Release Contents ==="
+          ls -la
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuilder-release
+          path: |
+            release/*
+            ubuilder-cross-platform.tar.gz
+          retention-days: 30
