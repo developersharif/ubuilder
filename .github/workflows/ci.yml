@@ -79,8 +79,10 @@ jobs:
           name: ubuilder-linux-${{ matrix.os }}
           path: |
             build/src/ubuilder
-            examples/output/*
+            examples/output/
           retention-days: 7
+          if-no-files-found: warn
+          compression-level: 6
 
       - name: Upload build logs
         if: failure()
@@ -264,8 +266,10 @@ jobs:
           path: |
             build/src/Release/ubuilder.exe
             build/src/ubuilder.exe
-            examples/output/*.exe
+            examples/output/
           retention-days: 7
+          if-no-files-found: warn
+          compression-level: 6
 
       - name: Upload build logs
         if: failure()
@@ -344,8 +348,10 @@ jobs:
           name: ubuilder-macos-${{ matrix.os }}
           path: |
             build/src/ubuilder
-            examples/output/*
+            examples/output/
           retention-days: 7
+          if-no-files-found: warn
+          compression-level: 6
 
       - name: Upload build logs
         if: failure()
