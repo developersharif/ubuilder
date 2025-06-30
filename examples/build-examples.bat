@@ -113,7 +113,7 @@ echo Runtime failures: %RUN_FAILED_COUNT%
 
 if %RUN_SUCCESS_COUNT% gtr 0 (
     echo.
-    echo Built executables:
+    echo Successfully built executables:
     for %%F in ("%OUTPUT_DIR%\*.exe") do (
         echo   * %%F
     )
