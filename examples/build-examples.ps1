@@ -137,36 +137,95 @@ function Build-UBuilder {
     
     Write-Log "Configuring with CMake..."
     try {
-        cmake -DCMAKE_BUILD_TYPE=Release $ProjectRoot
-        if ($LASTEXITCODE -ne 0) {
-            throw "CMake configuration failed"
+        # Use Start-Process for better output control
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "cmake"
+        $psi.Arguments = "-DCMAKE_BUILD_TYPE=Release `"$ProjectRoot`""
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.WorkingDirectory = $BuildDir
+        
+        $process = [System.Diagnostics.Process]::Start($psi)
+        $cmakeOutput = $process.StandardOutput.ReadToEnd()
+        $cmakeError = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        
+        if ($process.ExitCode -ne 0) {
+            Write-Log "CMake configuration failed with exit code $($process.ExitCode)" -Level Error
+            if ($cmakeError) { Write-Log "CMake Error: $cmakeError" -Level Error }
+            if ($cmakeOutput) { Write-Log "CMake Output: $cmakeOutput" -Level Error }
+            return $null
         }
+        Write-Verbose "CMake configuration successful"
     }
     catch {
         Write-Log "CMake configuration failed: $_" -Level Error
-        return $false
+        return $null
     }
     
     Write-Log "Building UBuilder..."
     try {
-        cmake --build . --config Release
-        if ($LASTEXITCODE -ne 0) {
-            throw "Build failed"
+        # Use Start-Process for build as well
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "cmake"
+        $psi.Arguments = "--build . --config Release"
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.WorkingDirectory = $BuildDir
+        
+        $process = [System.Diagnostics.Process]::Start($psi)
+        $buildOutput = $process.StandardOutput.ReadToEnd()
+        $buildError = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        
+        if ($process.ExitCode -ne 0) {
+            Write-Log "Build failed with exit code $($process.ExitCode)" -Level Error
+            if ($buildError) { Write-Log "Build Error: $buildError" -Level Error }
+            if ($buildOutput) { Write-Log "Build Output: $buildOutput" -Level Error }
+            return $null
         }
+        Write-Verbose "Build successful"
     }
     catch {
         Write-Log "Build failed: $_" -Level Error
-        return $false
+        return $null
     }
     
-    # Check for executable
-    $UBuilderExe = Join-Path $BuildDir "src\Release\ubuilder.exe"
-    if (-not (Test-Path $UBuilderExe)) {
-        $UBuilderExe = Join-Path $BuildDir "src\ubuilder.exe"
-        if (-not (Test-Path $UBuilderExe)) {
-            Write-Log "UBuilder executable not found after build" -Level Error
-            return $false
+    # Check for executable in different possible locations
+    $PossiblePaths = @(
+        (Join-Path $BuildDir "src\Release\ubuilder.exe"),
+        (Join-Path $BuildDir "src\Debug\ubuilder.exe"),
+        (Join-Path $BuildDir "src\ubuilder.exe"),
+        (Join-Path $BuildDir "Release\ubuilder.exe"),
+        (Join-Path $BuildDir "Debug\ubuilder.exe"),
+        (Join-Path $BuildDir "ubuilder.exe")
+    )
+    
+    $UBuilderExe = $null
+    foreach ($Path in $PossiblePaths) {
+        if (Test-Path $Path) {
+            $UBuilderExe = $Path
+            Write-Log "Found UBuilder executable at: $UBuilderExe" -Level Success
+            break
         }
+    }
+    
+    if (-not $UBuilderExe) {
+        Write-Log "UBuilder executable not found after build in any of the expected locations:" -Level Error
+        foreach ($Path in $PossiblePaths) {
+            Write-Log "  - $Path" -Level Error
+        }
+        
+        # List what files are actually in the build directory for debugging
+        Write-Log "Files in build directory:" -Level Error
+        if (Test-Path $BuildDir) {
+            Get-ChildItem -Recurse $BuildDir -Include "*.exe" | ForEach-Object {
+                Write-Log "  - $($_.FullName)" -Level Error
+            }
+        }
+        return $null
     }
     
     Write-Log "UBuilder core built successfully" -Level Success
@@ -315,6 +374,20 @@ function Main {
         Write-Log "Failed to build UBuilder core. Aborting." -Level Error
         exit 1
     }
+    
+    # Validate that the UBuilder executable path is valid
+    if (-not (Test-Path $UBuilderExe)) {
+        Write-Log "UBuilder executable path is invalid: $UBuilderExe" -Level Error
+        exit 1
+    }
+    
+    # Validate that it's actually an executable file
+    if (-not $UBuilderExe.EndsWith(".exe")) {
+        Write-Log "UBuilder path does not point to an executable: $UBuilderExe" -Level Error
+        exit 1
+    }
+    
+    Write-Log "Using UBuilder executable: $UBuilderExe" -Level Success
     
     # Step 2: Find and build all examples
     Write-Log "Building All Examples" -Level Header
