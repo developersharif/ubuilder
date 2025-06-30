@@ -94,6 +94,7 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 45
     strategy:
       matrix:
         shell: [cmd, powershell]
@@ -109,33 +110,90 @@ jobs:
         uses: lukka/get-cmake@latest
 
       - name: Install runtime dependencies
-        shell: powershell
+        shell: pwsh
         run: |
-          # Install using winget (modern Windows package manager)
-          winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements || echo "BuildTools already installed"
-          winget install --id Kitware.CMake --silent --accept-package-agreements --accept-source-agreements || echo "CMake already installed"
-          winget install --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements || echo "Python already installed"
-          winget install --id OpenJS.NodeJS --silent --accept-package-agreements --accept-source-agreements || echo "NodeJS already installed"
+          Write-Host "Installing dependencies..." -ForegroundColor Cyan
+          
+          # Function to safely run commands
+          function Invoke-SafeCommand {
+            param([string]$Command, [array]$Args, [string]$Name)
+            try {
+              $output = & $Command @Args 2>&1
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "✓ $Name installed/updated successfully" -ForegroundColor Green
+              } else {
+                Write-Host "⚠ $Name returned exit code $LASTEXITCODE (may already be installed)" -ForegroundColor Yellow
+              }
+            } catch {
+              Write-Host "⚠ $Name installation failed or already installed: $_" -ForegroundColor Yellow
+            }
+          }
+          
+          # Install via winget with better error handling
+          Invoke-SafeCommand "winget" @("install", "--id", "Microsoft.VisualStudio.2022.BuildTools", "--silent", "--accept-package-agreements", "--accept-source-agreements") "Visual Studio Build Tools"
+          Invoke-SafeCommand "winget" @("install", "--id", "Kitware.CMake", "--silent", "--accept-package-agreements", "--accept-source-agreements") "CMake"  
+          Invoke-SafeCommand "winget" @("install", "--id", "Python.Python.3.11", "--silent", "--accept-package-agreements", "--accept-source-agreements") "Python 3.11"
+          Invoke-SafeCommand "winget" @("install", "--id", "OpenJS.NodeJS", "--silent", "--accept-package-agreements", "--accept-source-agreements") "Node.js"
 
-          # Install PHP using Chocolatey as backup
+          # Install PHP using Chocolatey as backup  
+          Write-Host "Checking for PHP..." -ForegroundColor Cyan
           if (-not (Get-Command php -ErrorAction SilentlyContinue)) {
-            Set-ExecutionPolicy Bypass -Scope Process -Force
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-            choco install php -y
+            Write-Host "Installing PHP via Chocolatey..." -ForegroundColor Yellow
+            try {
+              Set-ExecutionPolicy Bypass -Scope Process -Force
+              [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+              iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+              choco install php -y --force
+              Write-Host "✓ PHP installed via Chocolatey" -ForegroundColor Green
+            } catch {
+              Write-Host "⚠ Failed to install PHP via Chocolatey: $_" -ForegroundColor Yellow
+            }
+          } else {
+            Write-Host "✓ PHP already available" -ForegroundColor Green
           }
 
-          # Refresh PATH
+          # Refresh environment
+          Write-Host "Refreshing environment..." -ForegroundColor Cyan
           $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+          
+          Write-Host "Dependencies installation completed!" -ForegroundColor Green
 
       - name: Verify runtime installations
-        shell: powershell
+        shell: pwsh
         run: |
-          Write-Host "=== Runtime Verification ==="
-          try { python --version } catch { Write-Host "Python not found" }
-          try { node --version } catch { Write-Host "Node.js not found" }
-          try { php --version } catch { Write-Host "PHP not found" }
-          try { cmake --version } catch { Write-Host "CMake not found" }
+          Write-Host "=== Runtime Verification ===" -ForegroundColor Cyan
+          
+          function Test-Runtime {
+            param([string]$Command, [string]$Name, [array]$VersionArgs = @("--version"))
+            Write-Host "Testing $Name..." -ForegroundColor Yellow
+            try {
+              $version = & $Command @VersionArgs 2>&1 | Select-Object -First 1
+              Write-Host "✓ $Name available: $version" -ForegroundColor Green
+              return $true
+            } catch {
+              Write-Host "✗ $Name not found or not working" -ForegroundColor Red
+              return $false
+            }
+          }
+          
+          $results = @{}
+          $results.Python = Test-Runtime "python" "Python"
+          if (-not $results.Python) {
+            $results.Python = Test-Runtime "python3" "Python3"
+          }
+          $results.NodeJS = Test-Runtime "node" "Node.js"
+          $results.PHP = Test-Runtime "php" "PHP"
+          $results.CMake = Test-Runtime "cmake" "CMake"
+          
+          Write-Host "`n=== Installation Summary ===" -ForegroundColor Cyan
+          $results.GetEnumerator() | ForEach-Object {
+            $status = if ($_.Value) { "✓" } else { "✗" }
+            $color = if ($_.Value) { "Green" } else { "Red" }
+            Write-Host "$($_.Key): $status" -ForegroundColor $color
+          }
+          
+          $totalSuccess = ($results.Values | Where-Object { $_ }).Count
+          Write-Host "`nSuccessfully verified: $totalSuccess/4 runtimes" -ForegroundColor $(if ($totalSuccess -ge 3) { "Green" } else { "Yellow" })
 
       - name: Run Windows Batch Build Script
         if: matrix.shell == 'cmd'
@@ -146,32 +204,57 @@ jobs:
 
       - name: Run Windows PowerShell Build Script
         if: matrix.shell == 'powershell'
-        shell: powershell
+        shell: pwsh
         run: |
-          Write-Host "=== Running Windows PowerShell Build Script ==="
+          Write-Host "=== Running Windows PowerShell Build Script ===" -ForegroundColor Cyan
           Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
           examples\build-examples.ps1 -Verbose
 
       - name: Verify build outputs
-        shell: powershell
+        shell: pwsh
         run: |
-          Write-Host "=== Build Output Verification ==="
+          Write-Host "=== Build Output Verification ===" -ForegroundColor Cyan
+          
+          # Check for UBuilder executable
+          $ubuilderPath = $null
           if (Test-Path "build\src\Release\ubuilder.exe") {
-            Write-Host "Found: build\src\Release\ubuilder.exe"
-            & "build\src\Release\ubuilder.exe" --version
+            $ubuilderPath = "build\src\Release\ubuilder.exe"
+            Write-Host "Found: $ubuilderPath" -ForegroundColor Green
           } elseif (Test-Path "build\src\ubuilder.exe") {
-            Write-Host "Found: build\src\ubuilder.exe"
-            & "build\src\ubuilder.exe" --version
+            $ubuilderPath = "build\src\ubuilder.exe"
+            Write-Host "Found: $ubuilderPath" -ForegroundColor Green
           } else {
-            Write-Host "UBuilder executable not found"
-            Get-ChildItem -Recurse -Name "ubuilder*"
+            Write-Host "UBuilder executable not found!" -ForegroundColor Red
+            Write-Host "Searching for ubuilder files..." -ForegroundColor Yellow
+            Get-ChildItem -Recurse -Name "ubuilder*" | ForEach-Object { Write-Host "  $_" }
+            exit 1
+          }
+          
+          # Test UBuilder executable
+          Write-Host "`nTesting UBuilder executable..." -ForegroundColor Yellow
+          try {
+            & $ubuilderPath --version
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "UBuilder version check successful!" -ForegroundColor Green
+            } else {
+              Write-Host "UBuilder version check failed with exit code $LASTEXITCODE" -ForegroundColor Red
+            }
+          } catch {
+            Write-Host "Failed to run UBuilder: $_" -ForegroundColor Red
           }
 
-          Write-Host "=== Example Outputs ==="
+          # Check example outputs
+          Write-Host "`n=== Example Outputs ===" -ForegroundColor Cyan
           if (Test-Path "examples\output") {
-            Get-ChildItem "examples\output"
+            $examples = Get-ChildItem "examples\output" -File
+            if ($examples.Count -gt 0) {
+              Write-Host "Found $($examples.Count) example executable(s):" -ForegroundColor Green
+              $examples | ForEach-Object { Write-Host "  $_" -ForegroundColor Green }
+            } else {
+              Write-Host "No example executables found in examples\output" -ForegroundColor Yellow
+            }
           } else {
-            Write-Host "No example outputs found"
+            Write-Host "examples\output directory not found" -ForegroundColor Yellow
           }
 
       - name: Upload build artifacts

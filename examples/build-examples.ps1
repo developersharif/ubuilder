@@ -204,7 +204,7 @@ function Build-Example {
     if (-not (Test-Path $OutputExecutable)) {
         Write-Log "Executable not created: $OutputExecutable" -Level Error
         return @{ Success = $false; Reason = "BuildError" }
-    fi
+    }
     
     Write-Log "Built $ExampleName -> $OutputExecutable" -Level Success
     return @{ Success = $true; Executable = $OutputExecutable }
