@@ -5,11 +5,11 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch: # Allow manual triggering
 
 env:
   CMAKE_BUILD_TYPE: Release
-  
+
 jobs:
   build-linux:
     runs-on: ubuntu-latest
@@ -53,7 +53,7 @@ jobs:
           echo "=== Build Output Verification ==="
           ls -la build/src/
           ls -la examples/output/ || echo "No example outputs found"
-          
+
           echo "=== Testing UBuilder executable ==="
           ./build/src/ubuilder --version
           ./build/src/ubuilder --help
@@ -116,7 +116,7 @@ jobs:
           winget install --id Kitware.CMake --silent --accept-package-agreements --accept-source-agreements || echo "CMake already installed"
           winget install --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements || echo "Python already installed"
           winget install --id OpenJS.NodeJS --silent --accept-package-agreements --accept-source-agreements || echo "NodeJS already installed"
-          
+
           # Install PHP using Chocolatey as backup
           if (-not (Get-Command php -ErrorAction SilentlyContinue)) {
             Set-ExecutionPolicy Bypass -Scope Process -Force
@@ -124,7 +124,7 @@ jobs:
             iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
             choco install php -y
           }
-          
+
           # Refresh PATH
           $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
 
@@ -166,7 +166,7 @@ jobs:
             Write-Host "UBuilder executable not found"
             Get-ChildItem -Recurse -Name "ubuilder*"
           }
-          
+
           Write-Host "=== Example Outputs ==="
           if (Test-Path "examples\output") {
             Get-ChildItem "examples\output"
@@ -235,7 +235,7 @@ jobs:
           echo "=== Build Output Verification ==="
           ls -la build/src/
           ls -la examples/output/ || echo "No example outputs found"
-          
+
           echo "=== Testing UBuilder executable ==="
           ./build/src/ubuilder --version
           ./build/src/ubuilder --help
@@ -279,7 +279,7 @@ jobs:
     needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     if: always()
-    
+
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -298,7 +298,7 @@ jobs:
           find artifacts -name "*windows*" -type d || echo "No Windows builds found"
           echo "macOS builds:"
           find artifacts -name "*macos*" -type d || echo "No macOS builds found"
-          
+
           echo ""
           echo "=== Example Applications ==="
           find artifacts -name "*.exe" -o -name "nodejs" -o -name "php" -o -name "python" | grep -v "/build/" || echo "No example applications found"
@@ -308,7 +308,7 @@ jobs:
     needs: [integration-test]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -321,21 +321,21 @@ jobs:
       - name: Create release package
         run: |
           mkdir -p release
-          
+
           # Copy executables
           find artifacts -name "ubuilder" -type f -exec cp {} release/ubuilder-linux \;
           find artifacts -name "ubuilder.exe" -type f -exec cp {} release/ubuilder-windows.exe \;
           find artifacts -name "ubuilder" -path "*/macos*" -type f -exec cp {} release/ubuilder-macos \;
-          
+
           # Copy documentation
           cp README.md release/
           cp examples/BUILD_SYSTEM.md release/
           cp LICENSE release/ 2>/dev/null || echo "LICENSE file not found"
-          
+
           # Create archive
           cd release
           tar -czf ../ubuilder-cross-platform.tar.gz *
-          
+
           echo "=== Release Contents ==="
           ls -la
 

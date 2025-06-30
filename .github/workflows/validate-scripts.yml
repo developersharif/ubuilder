@@ -3,16 +3,16 @@ name: Build Scripts Validation
 on:
   pull_request:
     paths:
-      - 'examples/build-examples*'
-      - 'build-all.*'
-      - 'build-system/**'
-      - '.github/workflows/**'
+      - "examples/build-examples*"
+      - "build-all.*"
+      - "build-system/**"
+      - ".github/workflows/**"
   workflow_dispatch:
 
 jobs:
   validate-scripts:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -25,13 +25,13 @@ jobs:
       - name: Validate Bash Scripts
         run: |
           echo "=== Validating Bash Scripts ==="
-          
+
           # Check main build scripts
           if [ -f "build-all.sh" ]; then
             echo "Checking build-all.sh..."
             shellcheck build-all.sh || echo "⚠️  build-all.sh has warnings"
           fi
-          
+
           # Check example build scripts
           for script in examples/build-examples*.sh; do
             if [ -f "$script" ]; then
@@ -39,7 +39,7 @@ jobs:
               shellcheck "$script" || echo "⚠️  $script has warnings"
             fi
           done
-          
+
           # Check build-system scripts
           for script in build-system/*.sh; do
             if [ -f "$script" ]; then
@@ -51,7 +51,7 @@ jobs:
       - name: Validate Batch Scripts Syntax
         run: |
           echo "=== Validating Batch Scripts Syntax ==="
-          
+
           # Basic syntax check for batch files
           for script in examples/*.bat build-all.bat; do
             if [ -f "$script" ]; then
@@ -79,9 +79,9 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== Validating PowerShell Scripts ==="
-          
+
           $scripts = Get-ChildItem -Path "examples" -Filter "*.ps1"
-          
+
           foreach ($script in $scripts) {
             Write-Host "Checking $($script.Name)..."
             
@@ -107,7 +107,7 @@ jobs:
       - name: Test Script Permissions
         run: |
           echo "=== Testing Script Permissions ==="
-          
+
           # Check if scripts are executable
           for script in build-all.sh examples/build-examples*.sh build-system/*.sh; do
             if [ -f "$script" ]; then
@@ -123,10 +123,10 @@ jobs:
       - name: Test Script Help/Usage
         run: |
           echo "=== Testing Script Help/Usage ==="
-          
+
           # Make scripts executable
           chmod +x build-all.sh examples/build-examples*.sh 2>/dev/null || true
-          
+
           # Test if scripts handle help flags gracefully
           for script in examples/build-examples*.sh; do
             if [ -f "$script" ]; then
@@ -137,7 +137,7 @@ jobs:
 
   test-minimal-build:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -150,12 +150,12 @@ jobs:
       - name: Test UBuilder core build only
         run: |
           echo "=== Testing Core Build Without Runtimes ==="
-          
+
           mkdir -p build
           cd build
           cmake -DCMAKE_BUILD_TYPE=Release ..
           make -j$(nproc)
-          
+
           if [ -f "src/ubuilder" ]; then
             echo "✅ UBuilder core built successfully"
             ./src/ubuilder --version || echo "Version check failed"
@@ -168,9 +168,9 @@ jobs:
       - name: Test build script error handling
         run: |
           echo "=== Testing Build Script Error Handling ==="
-          
+
           chmod +x examples/build-examples-linux.sh
-          
+
           # Test with missing runtimes (should skip gracefully)
           echo "Testing with no runtimes installed..."
           timeout 300s ./examples/build-examples-linux.sh || {
