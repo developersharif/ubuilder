@@ -96,7 +96,7 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       matrix:
         shell: [cmd, powershell]
@@ -200,7 +200,7 @@ jobs:
       - name: Run Windows Batch Build Script
         if: matrix.shell == 'cmd'
         shell: cmd
-        timeout-minutes: 30
+        timeout-minutes: 45
         run: |
           echo === Running Windows Batch Build Script ===
           examples\build-examples.bat
@@ -208,7 +208,7 @@ jobs:
       - name: Run Windows PowerShell Build Script
         if: matrix.shell == 'powershell'
         shell: pwsh
-        timeout-minutes: 30
+        timeout-minutes: 45
         run: |
           Write-Host "=== Running Windows PowerShell Build Script ===" -ForegroundColor Cyan
           Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force

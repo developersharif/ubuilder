@@ -7,7 +7,7 @@ setlocal enabledelayedexpansion
 set "SCRIPT_DIR=%~dp0"
 
 echo.
-echo 🚀 UBuilder Build All Projects
+echo UBuilder Build All Projects
 echo ===============================
 echo Platform: Windows
 echo.
@@ -31,12 +31,12 @@ if exist "%SCRIPT_DIR%examples\build-examples.bat" (
     call "%SCRIPT_DIR%examples\build-examples.bat"
     if !errorlevel! equ 0 (
         echo.
-        echo ✅ All UBuilder projects built and tested successfully!
+        echo All UBuilder projects built and tested successfully!
         echo    Check the examples\output\ directory for generated executables.
         exit /b 0
     ) else (
         echo.
-        echo ❌ Some builds or tests failed. Check the output above for details.
+        echo Some builds or tests failed. Check the output above for details.
         exit /b 1
     )
 ) else (

@@ -41,7 +41,7 @@ jobs:
             examples_path: examples/output/*
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository

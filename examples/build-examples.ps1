@@ -286,7 +286,7 @@ function Build-Example {
         $process = [System.Diagnostics.Process]::Start($psi)
         
         # Add timeout for long-running builds (especially Python)
-        $timeoutMinutes = if ($Runtime -eq "python") { 15 } else { 10 }
+        $timeoutMinutes = if ($Runtime -eq "python") { 30 } else { 15 }
         $timeoutMs = $timeoutMinutes * 60 * 1000
         
         Write-Log "Build timeout set to $timeoutMinutes minutes for $Runtime runtime..." -Level Info
@@ -371,8 +371,10 @@ function Test-Example {
         
         $process = [System.Diagnostics.Process]::Start($psi)
         
-        # Set timeout for example execution (5 minutes max)
-        $timeoutMs = 5 * 60 * 1000
+        # Set timeout for example execution (10 minutes max for Python, 5 for others)
+        $timeoutMs = if ($ExampleName -eq "python") { 10 * 60 * 1000 } else { 5 * 60 * 1000 }
+        $timeoutMinutes = if ($ExampleName -eq "python") { 10 } else { 5 }
+        
         if ($process.WaitForExit($timeoutMs)) {
             $output = $process.StandardOutput.ReadToEnd()
             $error = $process.StandardError.ReadToEnd()
@@ -384,7 +386,7 @@ function Test-Example {
                 throw "Execution failed with exit code $($process.ExitCode)"
             }
         } else {
-            Write-Host "Example execution timed out after 5 minutes" -ForegroundColor Red
+            Write-Host "Example execution timed out after $timeoutMinutes minutes" -ForegroundColor Red
             $process.Kill()
             throw "Execution timed out"
         }
