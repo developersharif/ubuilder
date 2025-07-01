@@ -79,6 +79,7 @@ EOF
     export PATH="$FAKE_BIN_DIR:$PATH"
     
     echo "✓ Fake runtimes created and PATH updated"
+    return 0
 }
 
 # Function to verify that runtimes are blocked
@@ -90,7 +91,16 @@ verify_runtimes_blocked() {
     local total_runtimes=4
     
     # Test PHP
-    if command -v php >/dev/null 2>&1 && php --version >/dev/null 2>&1; then
+    set +e  # Temporarily disable exit on error
+    php_available=false
+    if command -v php >/dev/null 2>&1; then
+        if php --version >/dev/null 2>&1; then
+            php_available=true
+        fi
+    fi
+    set -e  # Re-enable exit on error
+    
+    if [ "$php_available" = true ]; then
         echo "⚠️  PHP is still available and working"
     else
         echo "✅ PHP successfully blocked"
@@ -98,7 +108,16 @@ verify_runtimes_blocked() {
     fi
     
     # Test Python3
-    if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
+    set +e  # Temporarily disable exit on error
+    python3_available=false
+    if command -v python3 >/dev/null 2>&1; then
+        if python3 --version >/dev/null 2>&1; then
+            python3_available=true
+        fi
+    fi
+    set -e  # Re-enable exit on error
+    
+    if [ "$python3_available" = true ]; then
         echo "⚠️  Python3 is still available and working"
     else
         echo "✅ Python3 successfully blocked"
@@ -106,7 +125,16 @@ verify_runtimes_blocked() {
     fi
     
     # Test Python
-    if command -v python >/dev/null 2>&1 && python --version >/dev/null 2>&1; then
+    set +e  # Temporarily disable exit on error
+    python_available=false
+    if command -v python >/dev/null 2>&1; then
+        if python --version >/dev/null 2>&1; then
+            python_available=true
+        fi
+    fi
+    set -e  # Re-enable exit on error
+    
+    if [ "$python_available" = true ]; then
         echo "⚠️  Python is still available and working"
     else
         echo "✅ Python successfully blocked"
@@ -114,7 +142,16 @@ verify_runtimes_blocked() {
     fi
     
     # Test Node.js
-    if command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1; then
+    set +e  # Temporarily disable exit on error
+    node_available=false
+    if command -v node >/dev/null 2>&1; then
+        if node --version >/dev/null 2>&1; then
+            node_available=true
+        fi
+    fi
+    set -e  # Re-enable exit on error
+    
+    if [ "$node_available" = true ]; then
         echo "⚠️  Node.js is still available and working"
     else
         echo "✅ Node.js successfully blocked"
@@ -126,8 +163,10 @@ verify_runtimes_blocked() {
     
     if [ $blocked_count -ge 3 ]; then
         echo "✅ Runtime blocking successful"
+        return 0
     else
         echo "⚠️  Some runtimes are still available, but continuing with tests..."
+        return 0
     fi
 }
 
@@ -159,12 +198,31 @@ test_executable() {
     local start_time=$(date +%s)
     local exit_code=0
     
-    # Run with timeout and capture output
-    if timeout "${timeout_seconds}s" "$exe_path" > "${exe_name}_output.log" 2>&1; then
-        exit_code=$?
-    else
-        exit_code=$?
+    # Run with timeout and capture output (macOS compatible)
+    # Use a background process with kill timeout since 'timeout' command may not be available
+    set +e  # Disable exit on error for background process handling
+    "$exe_path" > "${exe_name}_output.log" 2>&1 &
+    local pid=$!
+    
+    local count=0
+    while [ $count -lt $timeout_seconds ]; do
+        if ! kill -0 $pid 2>/dev/null; then
+            # Process finished
+            wait $pid
+            exit_code=$?
+            break
+        fi
+        sleep 1
+        ((count++))
+    done
+    
+    # If we reached timeout, kill the process
+    if [ $count -ge $timeout_seconds ]; then
+        kill $pid 2>/dev/null || true
+        wait $pid 2>/dev/null || true
+        exit_code=124  # Standard timeout exit code
     fi
+    set -e  # Re-enable exit on error
     
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
@@ -295,10 +353,16 @@ main() {
     echo ""
     
     # Setup fake runtimes to simulate missing host runtimes
-    setup_fake_runtimes
+    if ! setup_fake_runtimes; then
+        echo "❌ Failed to set up fake runtimes"
+        exit 1
+    fi
     
     # Verify runtimes are blocked
-    verify_runtimes_blocked
+    if ! verify_runtimes_blocked; then
+        echo "❌ Failed to verify runtime blocking"
+        exit 1
+    fi
     
     # Run all executable tests
     if run_all_tests; then
