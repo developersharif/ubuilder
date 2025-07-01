@@ -54,73 +54,9 @@ jobs:
 
       - name: Remove runtime dependencies and test portability
         run: |
-          echo "=== Removing runtime dependencies to test portability ==="
-
-          # Try to remove packages with force and ignore dependencies
-          echo "Attempting to remove runtimes with --ignore-dependencies..."
-          sudo apt-get remove -y --ignore-depends --force-yes php-cli php-dev python3 python3-dev nodejs npm 2>/dev/null || true
-          sudo apt-get autoremove -y 2>/dev/null || true
-
-          # Alternative approach: Remove from PATH by manipulating environment
-          echo "Removing runtimes from PATH as fallback..."
-          export PATH=$(echo $PATH | tr ':' '\n' | grep -v -E '(php|python|node|npm)' | tr '\n' ':')
-
-          # Create dummy executables that exit with error to simulate missing runtimes
-          sudo mkdir -p /tmp/fake-bin
-          echo '#!/bin/bash' | sudo tee /tmp/fake-bin/php > /dev/null
-          echo 'echo "php: command not found"; exit 127' | sudo tee -a /tmp/fake-bin/php > /dev/null
-          echo '#!/bin/bash' | sudo tee /tmp/fake-bin/python3 > /dev/null
-          echo 'echo "python3: command not found"; exit 127' | sudo tee -a /tmp/fake-bin/python3 > /dev/null
-          echo '#!/bin/bash' | sudo tee /tmp/fake-bin/node > /dev/null
-          echo 'echo "node: command not found"; exit 127' | sudo tee -a /tmp/fake-bin/node > /dev/null
-          sudo chmod +x /tmp/fake-bin/*
-
-          # Prepend fake-bin to PATH to override system executables
-          export PATH="/tmp/fake-bin:$PATH"
-
-          echo "=== Verifying runtimes are removed/blocked ==="
-          if command -v php >/dev/null 2>&1 && php --version >/dev/null 2>&1; then
-            echo "⚠ PHP still available and working"
-          else
-            echo "✓ PHP successfully removed or blocked"
-          fi
-
-          if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
-            echo "⚠ Python3 still available and working"
-          else
-            echo "✓ Python3 successfully removed or blocked"
-          fi
-
-          if command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1; then
-            echo "⚠ Node.js still available and working"
-          else
-            echo "✓ Node.js successfully removed or blocked"
-          fi
-
-          echo "=== Testing Portable Executables (No System Runtimes) ==="
-
-          if [ -f "examples/output/nodejs" ]; then
-            echo "Testing Node.js executable..."
-            timeout 30s ./examples/output/nodejs || echo "Node.js test completed with exit code $?"
-          else
-            echo "⚠ Node.js executable not found"
-          fi
-
-          if [ -f "examples/output/php" ]; then
-            echo "Testing PHP executable..."
-            timeout 30s ./examples/output/php || echo "PHP test completed with exit code $?"
-          else
-            echo "⚠ PHP executable not found"
-          fi
-
-          if [ -f "examples/output/python" ]; then
-            echo "Testing Python executable..."
-            timeout 30s ./examples/output/python || echo "Python test completed with exit code $?"
-          else
-            echo "⚠ Python executable not found"
-          fi
-
-          echo "=== Portability Test Complete ==="
+          echo "=== Using dedicated Linux portability test script ==="
+          chmod +x examples/test-examples-linux-no-runtime.sh
+          ./examples/test-examples-linux-no-runtime.sh
 
       - name: Verify build outputs
         run: |
@@ -141,11 +77,6 @@ jobs:
           else
             echo "Unit tests not found, skipping..."
           fi
-
-      - name: Test individual platform script
-        run: |
-          echo "=== Testing Linux-specific script ==="
-          ./examples/build-examples-linux.sh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -292,127 +223,8 @@ jobs:
       - name: Remove runtime dependencies for portability test
         shell: pwsh
         run: |
-          Write-Host "=== Removing runtime dependencies to test portability ===" -ForegroundColor Cyan
-
-          # Function to safely uninstall
-          function Remove-Runtime {
-            param([string]$Name, [string]$WingetId)
-            try {
-              Write-Host "Removing $Name..." -ForegroundColor Yellow
-              winget uninstall --id $WingetId --silent --accept-source-agreements 2>$null
-              Write-Host "✓ $Name removal attempted" -ForegroundColor Green
-            } catch {
-              Write-Host "⚠ $Name removal failed or not found: $_" -ForegroundColor Yellow
-            }
-          }
-
-          # Remove runtimes
-          Remove-Runtime "Python" "Python.Python.3.11"
-          Remove-Runtime "Node.js" "OpenJS.NodeJS"
-
-          # Remove PHP (if installed via Chocolatey)
-          try {
-            choco uninstall php -y --force 2>$null
-            Write-Host "✓ PHP removal attempted" -ForegroundColor Green
-          } catch {
-            Write-Host "⚠ PHP removal failed or not found" -ForegroundColor Yellow
-          }
-
-          # Refresh environment
-          $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
-
-          Write-Host "=== Verifying runtimes are removed ===" -ForegroundColor Cyan
-
-          $runtimesRemoved = 0
-          $totalRuntimes = 3
-
-          if (-not (Get-Command php -ErrorAction SilentlyContinue)) {
-            Write-Host "✓ PHP successfully removed" -ForegroundColor Green
-            $runtimesRemoved++
-          } else {
-            Write-Host "⚠ PHP still available" -ForegroundColor Yellow
-          }
-
-          if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-            Write-Host "✓ Python successfully removed" -ForegroundColor Green
-            $runtimesRemoved++
-          } else {
-            Write-Host "⚠ Python still available" -ForegroundColor Yellow
-          }
-
-          if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-            Write-Host "✓ Node.js successfully removed" -ForegroundColor Green
-            $runtimesRemoved++
-          } else {
-            Write-Host "⚠ Node.js still available" -ForegroundColor Yellow
-          }
-
-          Write-Host "Runtimes removed: $runtimesRemoved/$totalRuntimes" -ForegroundColor $(if ($runtimesRemoved -eq $totalRuntimes) { "Green" } else { "Yellow" })
-
-      - name: Test portable executables
-        shell: pwsh
-        run: |
-          Write-Host "=== Testing Portable Executables (No System Runtimes) ===" -ForegroundColor Cyan
-
-          $exeTests = @()
-
-          # Test Node.js executable
-          $nodeExe = "examples\output\nodejs.exe"
-          if (Test-Path $nodeExe) {
-            Write-Host "Testing Node.js executable..." -ForegroundColor Yellow
-            try {
-              $process = Start-Process -FilePath $nodeExe -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput "nodejs_output.txt" -RedirectStandardError "nodejs_error.txt"
-              $exitCode = $process.ExitCode
-              Write-Host "Node.js test completed with exit code: $exitCode" -ForegroundColor $(if ($exitCode -eq 0) { "Green" } else { "Yellow" })
-              $exeTests += "Node.js: $exitCode"
-            } catch {
-              Write-Host "Node.js test failed: $_" -ForegroundColor Red
-              $exeTests += "Node.js: Failed"
-            }
-          } else {
-            Write-Host "⚠ Node.js executable not found at $nodeExe" -ForegroundColor Yellow
-            $exeTests += "Node.js: Not Found"
-          }
-
-          # Test PHP executable
-          $phpExe = "examples\output\php.exe"
-          if (Test-Path $phpExe) {
-            Write-Host "Testing PHP executable..." -ForegroundColor Yellow
-            try {
-              $process = Start-Process -FilePath $phpExe -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput "php_output.txt" -RedirectStandardError "php_error.txt"
-              $exitCode = $process.ExitCode
-              Write-Host "PHP test completed with exit code: $exitCode" -ForegroundColor $(if ($exitCode -eq 0) { "Green" } else { "Yellow" })
-              $exeTests += "PHP: $exitCode"
-            } catch {
-              Write-Host "PHP test failed: $_" -ForegroundColor Red
-              $exeTests += "PHP: Failed"
-            }
-          } else {
-            Write-Host "⚠ PHP executable not found at $phpExe" -ForegroundColor Yellow
-            $exeTests += "PHP: Not Found"
-          }
-
-          # Test Python executable
-          $pythonExe = "examples\output\python.exe"
-          if (Test-Path $pythonExe) {
-            Write-Host "Testing Python executable..." -ForegroundColor Yellow
-            try {
-              $process = Start-Process -FilePath $pythonExe -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput "python_output.txt" -RedirectStandardError "python_error.txt"
-              $exitCode = $process.ExitCode
-              Write-Host "Python test completed with exit code: $exitCode" -ForegroundColor $(if ($exitCode -eq 0) { "Green" } else { "Yellow" })
-              $exeTests += "Python: $exitCode"
-            } catch {
-              Write-Host "Python test failed: $_" -ForegroundColor Red
-              $exeTests += "Python: Failed"
-            }
-          } else {
-            Write-Host "⚠ Python executable not found at $pythonExe" -ForegroundColor Yellow
-            $exeTests += "Python: Not Found"
-          }
-
-          Write-Host "`n=== Portability Test Summary ===" -ForegroundColor Cyan
-          $exeTests | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
-          Write-Host "=== Portability Test Complete ===" -ForegroundColor Cyan
+          Write-Host "=== Using dedicated Windows portability test script ===" -ForegroundColor Cyan
+          examples\test-examples-windows-no-runtime.bat
 
       - name: Verify build outputs
         shell: pwsh
@@ -521,77 +333,9 @@ jobs:
 
       - name: Remove runtime dependencies and test portability
         run: |
-          echo "=== Removing runtime dependencies to test portability ==="
-
-          # Try to uninstall with ignore dependencies first
-          echo "Attempting to remove runtimes with --ignore-dependencies..."
-          brew uninstall --ignore-dependencies php python3 node 2>/dev/null || true
-
-          # Alternative approach: Create fake executables to override system ones
-          echo "Creating fake executables to simulate missing runtimes..."
-          mkdir -p /tmp/fake-bin
-
-          # Create fake PHP
-          echo '#!/bin/bash' > /tmp/fake-bin/php
-          echo 'echo "php: command not found"; exit 127' >> /tmp/fake-bin/php
-          chmod +x /tmp/fake-bin/php
-
-          # Create fake Python3
-          echo '#!/bin/bash' > /tmp/fake-bin/python3
-          echo 'echo "python3: command not found"; exit 127' >> /tmp/fake-bin/python3
-          chmod +x /tmp/fake-bin/python3
-
-          # Create fake Node
-          echo '#!/bin/bash' > /tmp/fake-bin/node
-          echo 'echo "node: command not found"; exit 127' >> /tmp/fake-bin/node
-          chmod +x /tmp/fake-bin/node
-
-          # Prepend fake-bin to PATH to override system executables
-          export PATH="/tmp/fake-bin:$PATH"
-
-          echo "=== Verifying runtimes are removed/blocked ==="
-          if command -v php >/dev/null 2>&1 && php --version >/dev/null 2>&1; then
-            echo "⚠ PHP still available and working"
-          else
-            echo "✓ PHP successfully removed or blocked"
-          fi
-
-          if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
-            echo "⚠ Python3 still available and working"
-          else
-            echo "✓ Python3 successfully removed or blocked"
-          fi
-
-          if command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1; then
-            echo "⚠ Node.js still available and working"
-          else
-            echo "✓ Node.js successfully removed or blocked"
-          fi
-
-          echo "=== Testing Portable Executables (No System Runtimes) ==="
-
-          if [ -f "examples/output/nodejs" ]; then
-            echo "Testing Node.js executable..."
-            timeout 30s ./examples/output/nodejs || echo "Node.js test completed with exit code $?"
-          else
-            echo "⚠ Node.js executable not found"
-          fi
-
-          if [ -f "examples/output/php" ]; then
-            echo "Testing PHP executable..."
-            timeout 30s ./examples/output/php || echo "PHP test completed with exit code $?"
-          else
-            echo "⚠ PHP executable not found"
-          fi
-
-          if [ -f "examples/output/python" ]; then
-            echo "Testing Python executable..."
-            timeout 30s ./examples/output/python || echo "Python test completed with exit code $?"
-          else
-            echo "⚠ Python executable not found"
-          fi
-
-          echo "=== Portability Test Complete ==="
+          echo "=== Using dedicated macOS portability test script ==="
+          chmod +x examples/test-examples-macos-no-runtime.sh
+          ./examples/test-examples-macos-no-runtime.sh
 
       - name: Verify build outputs
         run: |
@@ -612,11 +356,6 @@ jobs:
           else
             echo "Unit tests not found, skipping..."
           fi
-
-      - name: Test macOS-specific script
-        run: |
-          echo "=== Testing macOS-specific script ==="
-          ./examples/build-examples-macos.sh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
