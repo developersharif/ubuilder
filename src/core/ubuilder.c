@@ -113,7 +113,8 @@ const char* ub_error_string(ub_result_t error) {
     }
     
     int index = -error;
-    if (index < sizeof(ERROR_MESSAGES) / sizeof(ERROR_MESSAGES[0])) {
+    size_t array_size = sizeof(ERROR_MESSAGES) / sizeof(ERROR_MESSAGES[0]);
+    if ((size_t)index < array_size) {
         return ERROR_MESSAGES[index];
     }
     
@@ -243,6 +244,10 @@ ub_result_t ub_execute_application(const char* temp_dir, const char* entry_point
         return UB_ERROR_INVALID_ARGS;
     }
     
+    // Suppress unused parameter warnings for future implementation
+    (void)argc;
+    (void)argv;
+    
     printf("Executing application from: %s\n", temp_dir);
     printf("Entry point: %s\n", entry_point);
     
@@ -275,7 +280,6 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     FILE* self_file;
     char old_marker[] = "UBUILDER_DATA_MARKER";
     char modular_marker[] = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";  // More unique marker
-    char buffer[32];
     ub_runtime_type_t runtime;
     ub_result_t result = UB_ERROR_RUNTIME_NOT_FOUND;
     
@@ -513,14 +517,18 @@ static int ub_execute_script(ub_runtime_type_t runtime, const char* script_path,
             break;
         default:
             // Restore original directory before returning
-            chdir(original_dir);
+            if (chdir(original_dir) != 0) {
+                fprintf(stderr, "Warning: Failed to restore original directory\n");
+            }
             return -1;
     }
     
     int result = system(command);
     
     // Restore original working directory
-    chdir(original_dir);
+    if (chdir(original_dir) != 0) {
+        fprintf(stderr, "Warning: Failed to restore original directory\n");
+    }
     
     return result;
 }
@@ -648,7 +656,9 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, co
 #endif
     
     // Restore original working directory
-    chdir(original_dir);
+    if (chdir(original_dir) != 0) {
+        fprintf(stderr, "Warning: Failed to restore original directory\n");
+    }
     
     return result;
 }
@@ -1101,7 +1111,9 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
 #else
     snprintf(cleanup_cmd, sizeof(cleanup_cmd), "rm -rf %s", temp_dir);
 #endif
-    system(cleanup_cmd);
+    if (system(cleanup_cmd) != 0) {
+        fprintf(stderr, "Warning: Failed to clean up temporary directory: %s\n", temp_dir);
+    }
     
     return (exit_code == 0) ? UB_SUCCESS : UB_ERROR_EXECUTION_FAILED;
 }

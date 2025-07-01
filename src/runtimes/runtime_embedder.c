@@ -384,13 +384,15 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
     strcat(php_ini_content, "extension_dir = \"\"\n");  // Completely disable system extension loading
     strcat(php_ini_content, "auto_prepend_file = \"\"\n");
     strcat(php_ini_content, "auto_append_file = \"\"\n");
-    strcat(php_ini_content, "\n; Error handling for maximum compatibility\n");
-    strcat(php_ini_content, "error_reporting = E_ALL & ~E_WARNING & ~E_NOTICE\n");
+    strcat(php_ini_content, "\n; Error handling for maximum compatibility and clean output\n");
+    strcat(php_ini_content, "error_reporting = E_ERROR | E_PARSE\n");  // Only show critical errors
     strcat(php_ini_content, "display_errors = On\n");
+    strcat(php_ini_content, "display_startup_errors = Off\n");  // Hide startup warnings
     strcat(php_ini_content, "log_errors = Off\n");
-    strcat(php_ini_content, "\n; Enable FFI extension for GUI applications\n");
-    strcat(php_ini_content, "extension=ffi\n");
-    strcat(php_ini_content, "ffi.enable=true\n");
+    strcat(php_ini_content, "\n; EXTENSIONS COMPLETELY DISABLED FOR PORTABILITY\n");
+    strcat(php_ini_content, "; Extensions are embedded but NOT automatically loaded to ensure maximum portability\n");
+    strcat(php_ini_content, "; This prevents compatibility issues when running on different systems\n");
+    strcat(php_ini_content, "; Advanced users can extract and configure extensions manually if needed\n");
     strcat(php_ini_content, "\n; EXTENSIONS EMBEDDED BUT NOT LOADED\n");
     strcat(php_ini_content, "; All available extensions from build machine are embedded in this executable\n");
     strcat(php_ini_content, "; They are not automatically loaded to prevent compatibility issues\n");
@@ -430,7 +432,7 @@ ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir) {
         }
         
         // Create extension file path
-        char ext_path[2048];
+        char ext_path[4096];  // Increased buffer size to avoid truncation warnings
 #ifdef PLATFORM_WINDOWS
         snprintf(ext_path, sizeof(ext_path), "%s\\%s", ext_dir, ext_name);
 #else

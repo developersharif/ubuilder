@@ -86,6 +86,10 @@ ub_result_t runtime_execute(const ub_runtime_config_t* config, const char* temp_
         return UB_ERROR_INVALID_ARGS;
     }
     
+    // Suppress unused parameter warnings for future implementation
+    (void)argc;
+    (void)argv;
+    
     printf("Executing %s script: %s\n", config->name, script_path);
     
     // TODO: Build and execute runtime command
