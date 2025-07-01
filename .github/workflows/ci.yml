@@ -2,9 +2,9 @@ name: UBuilder Cross-Platform CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, tests]
   pull_request:
-    branches: [main]
+    branches: [main, tests]
   workflow_dispatch: # Allow manual triggering
 
 env:
