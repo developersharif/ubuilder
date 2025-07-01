@@ -2,17 +2,17 @@ name: UBuilder Cross-Platform CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, tests]
   pull_request:
-    branches: [main]
+    branches: [main, tests]
   workflow_dispatch: # Allow manual triggering
 
 env:
   CMAKE_BUILD_TYPE: Release
 
 permissions:
-  contents: read       # Required to checkout code
-  actions: write       # Required to upload artifacts
+  contents: read # Required to checkout code
+  actions: write # Required to upload artifacts
 
 jobs:
   build-linux:
@@ -52,6 +52,12 @@ jobs:
         run: |
           ./build-all.sh
 
+      - name: Remove runtime dependencies and test portability
+        run: |
+          echo "=== Using dedicated Linux portability test script ==="
+          chmod +x examples/test-examples-linux-no-runtime.sh
+          ./examples/test-examples-linux-no-runtime.sh
+
       - name: Verify build outputs
         run: |
           echo "=== Build Output Verification ==="
@@ -71,11 +77,6 @@ jobs:
           else
             echo "Unit tests not found, skipping..."
           fi
-
-      - name: Test individual platform script
-        run: |
-          echo "=== Testing Linux-specific script ==="
-          ./examples/build-examples-linux.sh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -103,7 +104,7 @@ jobs:
     timeout-minutes: 90
     strategy:
       matrix:
-        shell: [powershell]  # Temporarily disabled cmd due to Unicode/timeout issues
+        shell: [powershell] # Temporarily disabled cmd due to Unicode/timeout issues
         # shell: [cmd, powershell]
 
     steps:
@@ -120,7 +121,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Installing dependencies..." -ForegroundColor Cyan
-          
+
           # Function to safely run commands
           function Invoke-SafeCommand {
             param([string]$Command, [array]$Args, [string]$Name)
@@ -135,7 +136,7 @@ jobs:
               Write-Host "⚠ $Name installation failed or already installed: $_" -ForegroundColor Yellow
             }
           }
-          
+
           # Install via winget with better error handling
           Invoke-SafeCommand "winget" @("install", "--id", "Microsoft.VisualStudio.2022.BuildTools", "--silent", "--accept-package-agreements", "--accept-source-agreements") "Visual Studio Build Tools"
           Invoke-SafeCommand "winget" @("install", "--id", "Kitware.CMake", "--silent", "--accept-package-agreements", "--accept-source-agreements") "CMake"  
@@ -162,14 +163,14 @@ jobs:
           # Refresh environment
           Write-Host "Refreshing environment..." -ForegroundColor Cyan
           $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
-          
+
           Write-Host "Dependencies installation completed!" -ForegroundColor Green
 
       - name: Verify runtime installations
         shell: pwsh
         run: |
           Write-Host "=== Runtime Verification ===" -ForegroundColor Cyan
-          
+
           function Test-Runtime {
             param([string]$Command, [string]$Name, [array]$VersionArgs = @("--version"))
             Write-Host "Testing $Name..." -ForegroundColor Yellow
@@ -182,7 +183,7 @@ jobs:
               return $false
             }
           }
-          
+
           $results = @{}
           $results.Python = Test-Runtime "python" "Python"
           if (-not $results.Python) {
@@ -191,14 +192,14 @@ jobs:
           $results.NodeJS = Test-Runtime "node" "Node.js"
           $results.PHP = Test-Runtime "php" "PHP"
           $results.CMake = Test-Runtime "cmake" "CMake"
-          
+
           Write-Host "`n=== Installation Summary ===" -ForegroundColor Cyan
           $results.GetEnumerator() | ForEach-Object {
             $status = if ($_.Value) { "✓" } else { "✗" }
             $color = if ($_.Value) { "Green" } else { "Red" }
             Write-Host "$($_.Key): $status" -ForegroundColor $color
           }
-          
+
           $totalSuccess = ($results.Values | Where-Object { $_ }).Count
           Write-Host "`nSuccessfully verified: $totalSuccess/4 runtimes" -ForegroundColor $(if ($totalSuccess -ge 3) { "Green" } else { "Yellow" })
 
@@ -219,11 +220,17 @@ jobs:
           Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
           examples\build-examples.ps1 -Verbose
 
+      - name: Remove runtime dependencies for portability test
+        shell: pwsh
+        run: |
+          Write-Host "=== Using dedicated Windows portability test script ===" -ForegroundColor Cyan
+          examples\test-examples-windows-no-runtime.bat
+
       - name: Verify build outputs
         shell: pwsh
         run: |
           Write-Host "=== Build Output Verification ===" -ForegroundColor Cyan
-          
+
           # Check for UBuilder executable
           $ubuilderPath = $null
           if (Test-Path "build\src\Release\ubuilder.exe") {
@@ -238,7 +245,7 @@ jobs:
             Get-ChildItem -Recurse -Name "ubuilder*" | ForEach-Object { Write-Host "  $_" }
             exit 1
           }
-          
+
           # Test UBuilder executable
           Write-Host "`nTesting UBuilder executable..." -ForegroundColor Yellow
           try {
@@ -324,6 +331,12 @@ jobs:
         run: |
           ./build-all.sh
 
+      - name: Remove runtime dependencies and test portability
+        run: |
+          echo "=== Using dedicated macOS portability test script ==="
+          chmod +x examples/test-examples-macos-no-runtime.sh
+          ./examples/test-examples-macos-no-runtime.sh
+
       - name: Verify build outputs
         run: |
           echo "=== Build Output Verification ==="
@@ -343,11 +356,6 @@ jobs:
           else
             echo "Unit tests not found, skipping..."
           fi
-
-      - name: Test macOS-specific script
-        run: |
-          echo "=== Testing macOS-specific script ==="
-          ./examples/build-examples-macos.sh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
