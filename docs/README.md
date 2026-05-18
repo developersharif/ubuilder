@@ -15,6 +15,7 @@ This directory contains comprehensive documentation for the Universal Executable
 
 ### Architecture
 - [Architecture Audit](architecture/ARCHITECTURE_AUDIT.md) — honest engineering review of the path to true 0-dependency executables (gaps, refactors, phasing)
+- [Config File Spec (`ubuilder.json`)](architecture/CONFIG_FILE_SPEC.md) — schema, discovery, and CLI/config precedence for the planned config-file loader
 
 ### Guides
 - [Project Instructions](guides/project-instructions.md)

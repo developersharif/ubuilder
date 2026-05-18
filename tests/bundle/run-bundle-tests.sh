@@ -119,11 +119,12 @@ run_case() {
 
     mkdir -p "$case_work/build" "$run_dir"
 
-    # 1. bundle
-    info "bundling $fdir -> $bundle_out"
+    # 1. bundle — relies on ubuilder.json discovery for runtime + entry_point.
+    #    Only --project-dir and --output come from the CLI, exercising the
+    #    config-file path that the spec promises.
+    info "bundling $fdir -> $bundle_out (via ubuilder.json discovery)"
     if ! "$UBUILDER_BIN" \
             --project-dir="$fdir" \
-            --runtime="$rflag" \
             --output="$bundle_out" \
             >"$case_work/build.log" 2>&1; then
         fail "ubuilder build failed (see $case_work/build.log)"

@@ -101,6 +101,8 @@ Numbered so we can reference them later.
 
 **G13. GUI support flagged but unimplemented.** `--gui` is parsed (`src/main.c:31`) and stored in `ub_config_t.enable_gui` (`src/core/ubuilder.h:69`) but no code reads it. GUI on Linux additionally requires Xlib/Wayland linkage decisions and an Xvfb-vs-host-display strategy — neither addressed.
 
+**G14. No config-file loader.** `examples/*/ubuilder.json` and the bundle fixtures all carry `ubuilder.json` files, but `grep -r ubuilder\.json src/` returns no parser. The convention is purely aspirational. For repeatedly built large codebases this forces a long `--project-dir=… --runtime=… --entry-point=… --output=…` invocation every time. Spec: `docs/architecture/CONFIG_FILE_SPEC.md`.
+
 ---
 
 ## 4. Recommended architectural changes
@@ -115,8 +117,9 @@ Numbered so we can reference them later.
 | **S4. Populate `src/core/platform_compat.{c,h}` with: `pc_spawn`, `pc_temp_dir`, `pc_mkdir_p`, `pc_remove_tree`, `pc_realpath`, `pc_executable_path`.** | Collapses dozens of `#ifdef PLATFORM_WINDOWS` blocks (G6). | New file + ripple through `ubuilder.c`, `runtime_embedder.c`. |
 | **S5. Remove `popen("php-config --extension-dir")`; require an explicit `--php-runtime-dir` flag.** | Non-hermetic build (G10); breaks reproducibility. | `src/runtimes/php_builder.c:444` |
 | **S6. Drop the empty `*.new` and 0-byte source files.** | Stale (G12). | `src/core/ubuilder.c.new`, `src/core/platform_compat.{c,h}` — keep the latter, but populate them per S4. |
-| **S7. Add real end-to-end bundle tests.** | G11. See `tests/bundle/` and §5. | New. |
+| **S7. Add real end-to-end bundle tests.** | G11. See `tests/bundle/` and §5. | Done — `tests/bundle/`. |
 | **S8. Statically link the `ubuilder` launcher with musl.** | G4. Build via `zig cc -target x86_64-linux-musl` or `musl-gcc`. Static launcher is < 200 KB. | `CMakeLists.txt`, new `toolchains/musl-linux-x86_64.cmake`. |
+| **S9. Implement `ubuilder.json` config-file loader.** ✅ done. | Repeated CLI invocations on a large project are user-hostile; `ubuilder.json` already exists as convention but nothing parses it (G14). Spec: `docs/architecture/CONFIG_FILE_SPEC.md`. | `src/core/json_mini.{c,h}` + `src/core/config.{c,h}`; `src/main.c` integration; `tests/test_config.c`; bundle harness now exercises discovery. |
 
 ### 4.2 Medium-term (real embedding, 1–2 months)
 

@@ -19,21 +19,23 @@ int test_passed = 0;
 // Test declarations
 extern void test_core_functions(void);
 extern void test_runtime_manager(void);
+extern void test_config(void);
 
 int main(void) {
     printf("UBuilder Test Suite\n");
     printf("==================\n\n");
-    
+
     // Initialize UBuilder
     ub_result_t result = ub_init();
     if (result != UB_SUCCESS) {
         printf("Failed to initialize UBuilder: %s\n", ub_error_string(result));
         return EXIT_FAILURE;
     }
-    
+
     // Run tests
     test_core_functions();
     test_runtime_manager();
+    test_config();
     
     // Cleanup
     ub_cleanup();

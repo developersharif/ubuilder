@@ -2,6 +2,10 @@
 add_library(ubuilder_core STATIC
     core/ubuilder.c
     core/ubuilder.h
+    core/json_mini.c
+    core/json_mini.h
+    core/config.c
+    core/config.h
     runtimes/runtime_manager.c
     runtimes/runtime_manager.h
     runtimes/python_runtime.c
