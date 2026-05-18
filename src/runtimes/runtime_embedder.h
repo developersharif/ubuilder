@@ -43,6 +43,19 @@ ub_result_t ub_extract_runtime_binary(FILE* input_file, const char* temp_dir, ch
 ub_result_t ub_embed_runtime_tree(const char* source_dir, FILE* output_file);
 ub_result_t ub_extract_runtime_tree(FILE* input_file, const char* dest_dir);
 
+/*
+ * M1: shortcut for the "host runtime fallback" path — write a one-record
+ * tree-format payload containing the single binary at the supplied
+ * `dest_rel_path` (e.g. "bin/python3", "bin/node", "bin/php"). Used by
+ * every *_builder.c when --runtime-source is unset or points at a file.
+ *
+ * Honors the same tree format as ub_embed_runtime_tree so the launcher
+ * has one extraction path for all bundles.
+ */
+ub_result_t ub_embed_runtime_single_as_tree(const char* binary_path,
+                                            const char* dest_rel_path,
+                                            FILE*       output_file);
+
 // Function to extract PHP extensions and create custom php.ini
 ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir);
 

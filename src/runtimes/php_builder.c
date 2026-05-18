@@ -44,11 +44,31 @@ static ub_result_t php_validate_project(const char* project_dir) {
     return UB_ERROR_FILE_NOT_FOUND;
 }
 
-// Embed PHP runtime
+// Embed PHP runtime (M1-D: hermetic via vendored tree or user-chosen binary)
 static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_file) {
-    (void)config;  /* M1-D (PHP hermetic) will honor config->runtime_source. */
-    ub_runtime_info_t runtime_info;
     ub_result_t result;
+
+#ifndef PLATFORM_WINDOWS
+    if (config && config->runtime_source) {
+        struct stat src_st;
+        if (stat(config->runtime_source, &src_st) != 0) {
+            fprintf(stderr, "Error: --runtime-source not found: %s\n", config->runtime_source);
+            return UB_ERROR_FILE_NOT_FOUND;
+        }
+        if (S_ISDIR(src_st.st_mode)) {
+            printf("Embedding hermetic PHP tree: %s\n", config->runtime_source);
+            return ub_embed_runtime_tree(config->runtime_source, output_file);
+        }
+        if (S_ISREG(src_st.st_mode)) {
+            printf("Embedding user-chosen PHP binary: %s\n", config->runtime_source);
+            return ub_embed_runtime_single_as_tree(config->runtime_source, "bin/php", output_file);
+        }
+        fprintf(stderr, "Error: --runtime-source must be a file or directory\n");
+        return UB_ERROR_INVALID_ARGS;
+    }
+#endif
+
+    ub_runtime_info_t runtime_info;
     
     // Detect PHP binary on system
     result = ub_detect_runtime_binary(UB_RUNTIME_PHP, &runtime_info);
@@ -83,20 +103,26 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         return result;
     }
 #else
-    // On Unix-like systems, embed just the PHP binary
+    /* POSIX: 1-record tree using the host php binary at bin/php. Bundle is
+     * V5-format but non-portable (depends on host glibc + extensions). */
     printf("Binary size: %.2f MB\n", runtime_info.binary_size / (1024.0 * 1024.0));
-    
-    result = ub_embed_runtime_binary(runtime_info.binary_path, output_file);
+    printf("note: bundle will use host php (non-portable).\n"
+           "      No upstream pre-built static PHP exists yet. To produce a hermetic\n"
+           "      PHP bundle today: build with `static-php-cli`\n"
+           "      (https://github.com/crazywhalecc/static-php-cli) and pass the\n"
+           "      resulting binary via --runtime-source. M1-D will automate this.\n");
+    result = ub_embed_runtime_single_as_tree(runtime_info.binary_path, "bin/php", output_file);
     if (result != UB_SUCCESS) {
         ub_runtime_info_cleanup(&runtime_info);
         return result;
     }
-    
-    // Embed essential PHP extensions
+
+    /* Continue to embed host PHP extensions as a separate post-tree section.
+     * The launcher reads tree first, then this. Extensions are still
+     * non-hermetic in this mode — same caveat as the host binary. */
     result = php_embed_extensions(output_file);
     if (result != UB_SUCCESS) {
         printf("Warning: Failed to embed some PHP extensions, continuing...\n");
-        // Don't fail the build, but warn about potential issues
     }
 #endif
     

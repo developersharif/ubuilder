@@ -39,12 +39,25 @@ PYTHON_VER="3.12.13+20260510"
 PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-${PYTHON_VER}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
 PYTHON_SHA="d480f5d5878910ecbae212bf23bd7c25d7b209eb8cf5e98823c977384d272e88"
 
+# Node.js: official nodejs.org prebuilt. Requires glibc 2.28+ on the target
+# (Ubuntu 20.04+, RHEL 8+, Debian 10+). For older targets, swap in a musl
+# build from https://unofficial-builds.nodejs.org/ via --runtime-source.
+NODE_VER="24.15.0"
+NODE_URL="https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-x64.tar.xz"
+NODE_SHA="472655581fb851559730c48763e0c9d3bc25975c59d518003fc0849d3e4ba0f6"
+
+# PHP: no upstream pre-built static PHP exists today. static-php-cli
+# (https://github.com/crazywhalecc/static-php-cli) lets you self-build a
+# single static PHP binary in ~10 min. Until we automate that here, PHP
+# stays in non-hermetic (host) mode unless you point --runtime-source at
+# a binary you built. See docs/architecture/M1_HERMETIC_INTERPRETERS.md.
+
 manifest() {
     # Stdout: "<key>|<url>|<sha256>|<cache-subdir>"
     if [[ "$PLATFORM" == "linux" && "$ARCH" == "x86_64" ]]; then
         printf 'python|%s|%s|python/%s\n' "$PYTHON_URL" "$PYTHON_SHA" "$PYTHON_VER"
+        printf 'node|%s|%s|node/%s\n'     "$NODE_URL"   "$NODE_SHA"   "$NODE_VER"
     fi
-    # PHP and Node entries land here in subsequent M1 phases.
 }
 
 # ----- helpers -----------------------------------------------------------
@@ -74,7 +87,7 @@ download_one() {
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' RETURN
 
-    local tarball="$tmpdir/runtime.tar.gz"
+    local tarball="$tmpdir/runtime.tarball"
     printf '  downloading %s\n    -> %s\n' "$url" "$tarball"
     curl -fSL --retry 3 -o "$tarball" "$url"
 
@@ -83,7 +96,8 @@ download_one() {
 
     printf '  extracting\n'
     mkdir -p "$dest"
-    tar -xzf "$tarball" -C "$tmpdir"
+    # `tar -xf` autodetects gzip / xz / zstd compression.
+    tar -xf "$tarball" -C "$tmpdir"
     # python-build-standalone tarballs unpack to ./python/
     local extracted
     extracted="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d ! -name "$(basename "$tmpdir")" | head -1)"

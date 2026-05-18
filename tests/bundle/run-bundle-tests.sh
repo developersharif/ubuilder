@@ -229,25 +229,29 @@ for rt in "${REQUESTED[@]}"; do
     run_case "$rt" || ((failures++))
 done
 
-# M1-B (Python hermetic). The headline test of the entire M1 program:
-# build a Python bundle using a vendored interpreter, then run it with
-# PATH stripped to prove the bundle does NOT need host python3.
-run_hermetic_python() {
+# M1-B/E (hermetic runtime). The headline test of the entire M1 program:
+# build a bundle using a vendored interpreter, then run it with PATH
+# stripped to prove the bundle does NOT need the host runtime. Parametric
+# so Python and Node share the same harness logic.
+#   $1 = runtime key (python / nodejs)
+#   $2 = cache subdir under $RUNTIMES_CACHE (python / node)
+#   $3 = relative exe inside the tree (bin/python3 / bin/node)
+run_hermetic_case() {
+    local rt="$1" cache_subdir="$2" rel_exe="$3"
+    local fdir="$FIXTURE_DIR/$rt"
     local hermetic_dir
-    hermetic_dir="$(find "$RUNTIMES_CACHE/python" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
-    if [[ -z "$hermetic_dir" || ! -x "$hermetic_dir/bin/python3" ]]; then
-        log ""
-        log "── python (hermetic) ──"
-        warn "vendored Python not found at $RUNTIMES_CACHE/python/*"
-        warn "skipping hermetic test; run scripts/vendor-runtimes.sh python first"
+    hermetic_dir="$(find "$RUNTIMES_CACHE/$cache_subdir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+
+    log ""
+    log "── $rt (hermetic via --runtime-source) ──"
+    if [[ -z "$hermetic_dir" || ! -x "$hermetic_dir/$rel_exe" ]]; then
+        warn "vendored $rt not found at $RUNTIMES_CACHE/$cache_subdir/*"
+        warn "skipping; run scripts/vendor-runtimes.sh $cache_subdir first"
         return 0
     fi
 
-    local fdir="$FIXTURE_DIR/python"
-    local cw="$WORK_DIR/python-hermetic"
+    local cw="$WORK_DIR/$rt-hermetic"
     mkdir -p "$cw/build" "$cw/run"
-    log ""
-    log "── python (hermetic via --runtime-source) ──"
     info "vendored runtime: $hermetic_dir"
 
     if ! "$UBUILDER_BIN" \
@@ -265,7 +269,7 @@ run_hermetic_python() {
     chmod +x "$cw/run/app"
 
     # The actual hermeticity proof: PATH points at an empty dir, so the
-    # only Python available is the one inside the bundle.
+    # only interpreter available is the one inside the bundle.
     local fake_path
     fake_path="$(mktemp -d)"
     local exit_code=0
@@ -290,12 +294,14 @@ run_hermetic_python() {
     return $rc
 }
 
-# Only run hermetic case when the user requested python (or default-all).
+# Run a hermetic case per requested runtime that has a vendor entry today.
+# PHP intentionally skipped — no upstream pre-built static PHP yet (see
+# docs/architecture/M1_HERMETIC_INTERPRETERS.md).
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "python" ]]; then
-        run_hermetic_python || ((failures++))
-        break
-    fi
+    case "$rt" in
+        python) run_hermetic_case python python "bin/python3" || ((failures++)) ;;
+        nodejs) run_hermetic_case nodejs node   "bin/node"    || ((failures++)) ;;
+    esac
 done
 
 log ""

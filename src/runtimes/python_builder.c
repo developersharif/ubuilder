@@ -57,45 +57,6 @@ static void python_embed_directory_recursive(const char* dir_path, const char* b
  * On POSIX every path produces a V5 tree-format payload (uniform launcher
  * extraction). On Windows we still defer to the legacy multi-file embed.
  */
-#ifndef PLATFORM_WINDOWS
-static ub_result_t python_embed_single_as_tree(const char* binary_path, FILE* out) {
-    /* One-record tree with the host binary at "bin/python3". Format matches
-     * ub_embed_runtime_tree: [magic] [records...] [u16=0 sentinel]. */
-    uint32_t magic = UB_RUNTIME_TREE_MAGIC;
-    if (fwrite(&magic, sizeof(magic), 1, out) != 1) return UB_ERROR_EXTRACTION_FAILED;
-
-    const char* rel  = "bin/python3";
-    uint16_t plen    = (uint16_t)strlen(rel);
-    uint32_t mode    = 0755;
-    struct stat st;
-    if (stat(binary_path, &st) != 0) return UB_ERROR_FILE_NOT_FOUND;
-    uint64_t size64  = (uint64_t)st.st_size;
-
-    if (fwrite(&plen, sizeof(plen), 1, out) != 1)     return UB_ERROR_EXTRACTION_FAILED;
-    if (fwrite(rel,   1, plen, out)         != plen)  return UB_ERROR_EXTRACTION_FAILED;
-    if (fwrite(&mode, sizeof(mode), 1, out) != 1)     return UB_ERROR_EXTRACTION_FAILED;
-    if (fwrite(&size64, sizeof(size64), 1, out) != 1) return UB_ERROR_EXTRACTION_FAILED;
-
-    FILE* in = fopen(binary_path, "rb");
-    if (!in) return UB_ERROR_FILE_NOT_FOUND;
-    char buf[65536];
-    uint64_t remaining = size64;
-    while (remaining > 0) {
-        size_t want = (remaining > sizeof(buf)) ? sizeof(buf) : (size_t)remaining;
-        size_t got  = fread(buf, 1, want, in);
-        if (got == 0) { fclose(in); return UB_ERROR_EXTRACTION_FAILED; }
-        if (fwrite(buf, 1, got, out) != got) { fclose(in); return UB_ERROR_EXTRACTION_FAILED; }
-        remaining -= got;
-    }
-    fclose(in);
-
-    /* Sentinel: u16=0 path_len marks end of tree. */
-    uint16_t sentinel = 0;
-    if (fwrite(&sentinel, sizeof(sentinel), 1, out) != 1) return UB_ERROR_EXTRACTION_FAILED;
-    return UB_SUCCESS;
-}
-#endif
-
 static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_file) {
     ub_result_t result;
 
@@ -113,7 +74,7 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
         }
         if (S_ISREG(st.st_mode)) {
             printf("Embedding user-chosen Python binary: %s\n", config->runtime_source);
-            return python_embed_single_as_tree(config->runtime_source, output_file);
+            return ub_embed_runtime_single_as_tree(config->runtime_source, "bin/python3", output_file);
         }
         fprintf(stderr, "Error: --runtime-source must be a file or directory\n");
         return UB_ERROR_INVALID_ARGS;
@@ -153,7 +114,7 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
     printf("Binary size: %.2f MB\n", runtime_info.binary_size / (1024.0 * 1024.0));
     printf("note: bundle will use host /usr/bin/python3 (non-portable).\n"
            "      Run `scripts/vendor-runtimes.sh python` + --runtime-source for a hermetic bundle.\n");
-    result = python_embed_single_as_tree(runtime_info.binary_path, output_file);
+    result = ub_embed_runtime_single_as_tree(runtime_info.binary_path, "bin/python3", output_file);
 #endif
 
     ub_runtime_info_cleanup(&runtime_info);

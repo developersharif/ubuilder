@@ -898,6 +898,46 @@ static ub_result_t embed_tree_walk(const char* abs_path,
     return UB_SUCCESS;
 }
 
+ub_result_t ub_embed_runtime_single_as_tree(const char* binary_path,
+                                            const char* dest_rel_path,
+                                            FILE*       output_file) {
+    if (!binary_path || !dest_rel_path || !output_file) return UB_ERROR_INVALID_ARGS;
+
+    uint32_t magic = UB_RUNTIME_TREE_MAGIC;
+    if (fwrite(&magic, sizeof(magic), 1, output_file) != 1) return UB_ERROR_EXTRACTION_FAILED;
+
+    struct stat st;
+    if (stat(binary_path, &st) != 0 || !S_ISREG(st.st_mode)) return UB_ERROR_FILE_NOT_FOUND;
+
+    size_t   rlen = strlen(dest_rel_path);
+    if (rlen == 0 || rlen > 0xFFFF) return UB_ERROR_INVALID_ARGS;
+    uint16_t plen   = (uint16_t)rlen;
+    uint32_t mode   = 0755;   /* exec for the embedded interpreter */
+    uint64_t size64 = (uint64_t)st.st_size;
+
+    if (fwrite(&plen,        sizeof(plen),   1, output_file) != 1)    return UB_ERROR_EXTRACTION_FAILED;
+    if (fwrite(dest_rel_path, 1, rlen, output_file)          != rlen) return UB_ERROR_EXTRACTION_FAILED;
+    if (fwrite(&mode,        sizeof(mode),   1, output_file) != 1)    return UB_ERROR_EXTRACTION_FAILED;
+    if (fwrite(&size64,      sizeof(size64), 1, output_file) != 1)    return UB_ERROR_EXTRACTION_FAILED;
+
+    FILE* in = fopen(binary_path, "rb");
+    if (!in) return UB_ERROR_FILE_NOT_FOUND;
+    char buf[65536];
+    uint64_t remaining = size64;
+    while (remaining > 0) {
+        size_t want = (remaining > sizeof(buf)) ? sizeof(buf) : (size_t)remaining;
+        size_t got  = fread(buf, 1, want, in);
+        if (got == 0)                              { fclose(in); return UB_ERROR_EXTRACTION_FAILED; }
+        if (fwrite(buf, 1, got, output_file) != got){ fclose(in); return UB_ERROR_EXTRACTION_FAILED; }
+        remaining -= got;
+    }
+    fclose(in);
+
+    uint16_t sentinel = 0;
+    if (fwrite(&sentinel, sizeof(sentinel), 1, output_file) != 1) return UB_ERROR_EXTRACTION_FAILED;
+    return UB_SUCCESS;
+}
+
 ub_result_t ub_embed_runtime_tree(const char* source_dir, FILE* output_file) {
     if (!source_dir || !output_file) return UB_ERROR_INVALID_ARGS;
     struct stat st;

@@ -1,6 +1,6 @@
 # M1 — Hermetic Interpreters
 
-**Status:** ✅ Python end-to-end (M1-A plumbing + M1-B tree embed/extract). The headline test — `PATH=/nonexistent bundle "args"` — passes locally. PHP and Node still source from host (M1-D/E). Tier-3 Docker test in M1-C.
+**Status:** ✅ Python + Node end-to-end (M1-A plumbing + M1-B/E tree embed/extract). Hermetic Python (185 MB) and Node (186 MB) bundles both pass the `PATH=/nonexistent` test in the harness. PHP builder accepts `--runtime-source=<binary>` (M1-D plumbing done) but no upstream pre-built static PHP exists — `static-php-cli` is the documented self-build path. Tier-3 Docker test (M1-C) is the natural next step.
 **Companion to:** `ARCHITECTURE_AUDIT.md` (this implements M1).
 **Goal:** UBuilder bundles stop depending on the build host's `/usr/bin/python3` (etc.). The bundle's interpreter is a vendored, redistributable build whose ABI is independent of whatever ran the build.
 
@@ -8,11 +8,11 @@ This is the single biggest hermeticity step in the audit. After M1, paired with 
 
 ## Where the interpreter comes from
 
-| Runtime | Source | Build | License |
+| Runtime | Source | Artifact | License |
 |---|---|---|---|
-| Python | [`astral-sh/python-build-standalone`](https://github.com/astral-sh/python-build-standalone) | `cpython-<ver>-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz` | PSF / Apache-2 |
-| PHP    | (TBD M1-D — likely `php-static` or a self-built `--without-system-libs` static build) | TBD | PHP License |
-| Node   | (TBD M1-E — likely `nodejs/unofficial-builds` musl-static, or `nexe`-style) | TBD | MIT + V8 BSD |
+| Python | [`astral-sh/python-build-standalone`](https://github.com/astral-sh/python-build-standalone) | `cpython-3.12.13+20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz` (~32 MB) | PSF / Apache-2 |
+| Node   | [`nodejs.org` official](https://nodejs.org/dist/) | `node-v24.15.0-linux-x64.tar.xz` (~25 MB; glibc 2.28+) | MIT + V8 BSD |
+| PHP    | **No upstream pre-built static binary.** Workaround: build with [`crazywhalecc/static-php-cli`](https://github.com/crazywhalecc/static-php-cli) and pass the result via `--runtime-source`. M1-D will automate this. | TBD | PHP License |
 
 We do **not** build interpreters from source ourselves in this repo — that's a multi-day operation per platform-arch and is not where UBuilder's value lives. We consume upstream binary releases with pinned SHA-256s.
 
