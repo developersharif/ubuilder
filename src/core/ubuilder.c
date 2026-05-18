@@ -1,4 +1,6 @@
 #include "ubuilder.h"
+#include "platform_compat.h"
+#include "sha256.h"
 #include "runtimes/runtime_builder.h"
 #include "runtimes/runtime_embedder.h"
 #include <stdio.h>
@@ -271,7 +273,11 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     }
     
     FILE* self_file;
-    char modular_marker[] = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";  // More unique marker
+    /* V4 trailer (audit S3): adds a 32-byte SHA-256 of the payload sitting
+     * just before the offset+marker block. V3 bundles (which carried no
+     * hash) are intentionally rejected — see the Apple-sandbox principle
+     * in docs/architecture/ARCHITECTURE_AUDIT.md. */
+    char modular_marker[] = "UBUILDER_MODULAR_V4_SHA256_MARKER";
     ub_runtime_type_t runtime;
     ub_result_t result = UB_ERROR_RUNTIME_NOT_FOUND;
     
@@ -329,40 +335,75 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     fseek(self_file, search_start, SEEK_SET);
     size_t bytes_read = fread(search_buffer, 1, file_size - search_start, self_file);
     
-    // Look for modular marker
-    for (size_t i = 0; i <= bytes_read - strlen(modular_marker); i++) {
-        if (memcmp(search_buffer + i, modular_marker, strlen(modular_marker)) == 0) {
-            // Found modular marker at the end, now read runtime info that comes after it
-            size_t magic_pos = i + strlen(modular_marker);
-            size_t runtime_pos = magic_pos + sizeof(uint32_t);
-            size_t data_offset_pos = i - sizeof(uint64_t); // Data offset is right before the marker
-            
-            if (runtime_pos + sizeof(runtime) <= bytes_read && data_offset_pos < bytes_read) {
-                // Check magic number
-                uint32_t magic_number;
-                memcpy(&magic_number, search_buffer + magic_pos, sizeof(magic_number));
-                if (magic_number != 0xDEADBEEF) {
-                    continue; // Not a valid embedded app
-                }
-                
-                memcpy(&runtime, search_buffer + runtime_pos, sizeof(runtime));
-                
-                // Get data start offset
-                uint64_t data_start_offset_64;
-                memcpy(&data_start_offset_64, search_buffer + data_offset_pos, sizeof(data_start_offset_64));
-                long data_start_offset = (long)data_start_offset_64;
-                
-                // Verify this is a valid runtime type
-                if (runtime >= UB_RUNTIME_PYTHON && runtime <= UB_RUNTIME_NODEJS) {
-                    // Position file at the start of embedded data
-                    fseek(self_file, data_start_offset, SEEK_SET);
-                    result = ub_run_modular_embedded_app(runtime, self_file, argc, argv);
-                    free(search_buffer);
-                    fclose(self_file);
-                    return result;
-                }
-            }
+    /* Look for the V4 modular marker.
+     * Trailer layout (relative to marker start at search_buffer + i):
+     *   [ ... payload ...                           ]                            ends at sha_pos
+     *   [ 32 bytes SHA-256(payload) ]               at i - sizeof(uint64_t) - 32
+     *   [ uint64_t data_start_offset ]              at i - sizeof(uint64_t)
+     *   [ marker (35 bytes) ]                       at i
+     *   [ uint32_t magic ]                          at i + len(marker)
+     *   [ enum runtime ]                            at i + len(marker) + 4
+     */
+    const size_t mlen = strlen(modular_marker);
+    for (size_t i = 0; i + mlen <= bytes_read; i++) {
+        if (memcmp(search_buffer + i, modular_marker, mlen) != 0) continue;
+
+        size_t magic_pos       = i + mlen;
+        size_t runtime_pos     = magic_pos + sizeof(uint32_t);
+        if (runtime_pos + sizeof(runtime) > bytes_read) continue;
+        if (i < sizeof(uint64_t) + UB_SHA256_DIGEST_SIZE) continue;
+        size_t data_offset_pos = i - sizeof(uint64_t);
+        size_t sha_pos         = data_offset_pos - UB_SHA256_DIGEST_SIZE;
+
+        /* Quick sanity gate. */
+        uint32_t magic_number;
+        memcpy(&magic_number, search_buffer + magic_pos, sizeof(magic_number));
+        if (magic_number != 0xDEADBEEF) continue;
+
+        memcpy(&runtime, search_buffer + runtime_pos, sizeof(runtime));
+        if (runtime < UB_RUNTIME_PYTHON || runtime > UB_RUNTIME_NODEJS) continue;
+
+        uint64_t data_start_offset_64;
+        memcpy(&data_start_offset_64, search_buffer + data_offset_pos, sizeof(data_start_offset_64));
+        long data_start_offset = (long)data_start_offset_64;
+
+        /* Absolute file offset of the stored hash. */
+        long sha_abs = search_start + (long)sha_pos;
+        if (data_start_offset < 0 || sha_abs <= data_start_offset) continue;
+
+        uint8_t stored_hash[UB_SHA256_DIGEST_SIZE];
+        memcpy(stored_hash, search_buffer + sha_pos, UB_SHA256_DIGEST_SIZE);
+
+        /* Integrity check (S3): SHA-256 over [data_start_offset, sha_abs).
+         * On mismatch we refuse to run — no fallback, no warning-then-continue. */
+        uint8_t actual_hash[UB_SHA256_DIGEST_SIZE];
+        long    payload_len = sha_abs - data_start_offset;
+        if (ub_sha256_file_range(self_file, data_start_offset, payload_len, actual_hash) != 0) {
+            free(search_buffer);
+            fclose(self_file);
+            fprintf(stderr, "Error: Failed to compute payload hash for integrity check\n");
+            return UB_ERROR_EXTRACTION_FAILED;
         }
+        if (memcmp(stored_hash, actual_hash, UB_SHA256_DIGEST_SIZE) != 0) {
+            char want_hex[65], got_hex[65];
+            ub_sha256_hex(stored_hash, want_hex);
+            ub_sha256_hex(actual_hash, got_hex);
+            fprintf(stderr,
+                "Error: Bundle integrity check FAILED — refusing to run.\n"
+                "  Expected SHA-256: %s\n"
+                "  Computed SHA-256: %s\n"
+                "  The bundle has been modified, truncated, or corrupted since it was built.\n",
+                want_hex, got_hex);
+            free(search_buffer);
+            fclose(self_file);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+
+        fseek(self_file, data_start_offset, SEEK_SET);
+        result = ub_run_modular_embedded_app(runtime, self_file, argc, argv);
+        free(search_buffer);
+        fclose(self_file);
+        return result;
     }
     
     /* Legacy v2 (UBUILDER_DATA_MARKER) format intentionally not supported here.
@@ -403,132 +444,117 @@ static const char* get_temp_dir(void) {
  * See docs/architecture/ARCHITECTURE_AUDIT.md §3 G3 and §4.1 S2. */
 
 // Function to execute script with embedded runtime binary
-static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, const char* runtime_binary_path, 
-                                                   const char* script_path, int argc, char* argv[]) {
-    char command[2048];
-    char args_str[1024] = "";
+/*
+ * Execute the embedded interpreter against `script_path` with the user's
+ * argv. Spawns directly via pc_spawn_and_wait (audit S1) — no shell, no
+ * argv re-quoting, no 1024-byte cap.
+ *
+ * Runtime-specific argv/env construction:
+ *   PHP    : argv = [exe, "-c", "<runtime_dir>/php.ini", script_name, user_args...]
+ *            env  += PHP_INI_SCAN_DIR=""        (block host extension scan)
+ *   Python : argv = [exe, script_name, user_args...]
+ *            env  += PYTHONPATH=<runtime_dir>/Lib:<runtime_dir>/Lib/site-packages:$PYTHONPATH
+ *   Node   : argv = [exe, script_name, user_args...]   (no env injection)
+ *
+ * The child is chdir'd into the directory containing the script so relative
+ * imports/requires resolve against the project layout.
+ */
+static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime,
+                                                   const char*       runtime_binary_path,
+                                                   const char*       script_path,
+                                                   int argc, char* argv[]) {
+    /* Split script_path into <dir>/<name>. */
     char script_dir[1024];
     char script_name[256];
-    char original_dir[1024];
-    
-    // Save current working directory
-    if (getcwd(original_dir, sizeof(original_dir)) == NULL) {
-        return -1;
-    }
-    
-    // Extract directory and filename from script path
+    if (strlen(script_path) >= sizeof(script_dir)) return -1;
     strcpy(script_dir, script_path);
 #ifdef PLATFORM_WINDOWS
     char* last_slash = strrchr(script_dir, '\\');
 #else
     char* last_slash = strrchr(script_dir, '/');
 #endif
+    const char* cwd_for_child = NULL;
     if (last_slash) {
         *last_slash = '\0';
+        if (strlen(last_slash + 1) >= sizeof(script_name)) return -1;
         strcpy(script_name, last_slash + 1);
-        
-        // Change to script directory
-        if (chdir(script_dir) != 0) {
-            return -1;
-        }
+        cwd_for_child = script_dir;
     } else {
-        // Script is in current directory, no need to change directory
+        if (strlen(script_path) >= sizeof(script_name)) return -1;
         strcpy(script_name, script_path);
-        // Don't change directory in this case
     }
-    
-    // Build argument string
-    for (int i = 1; i < argc; i++) {
-        strncat(args_str, " ", sizeof(args_str) - strlen(args_str) - 1);
-        strncat(args_str, argv[i], sizeof(args_str) - strlen(args_str) - 1);
-    }
-    
-    // Build execution command using embedded runtime binary
+
+    /* Build the runtime directory (parent of the runtime binary) for
+     * PYTHONPATH / php.ini resolution. */
+    char runtime_dir[1024];
+    if (strlen(runtime_binary_path) >= sizeof(runtime_dir)) return -1;
+    strcpy(runtime_dir, runtime_binary_path);
+#ifdef PLATFORM_WINDOWS
+    char* rt_slash = strrchr(runtime_dir, '\\');
+#else
+    char* rt_slash = strrchr(runtime_dir, '/');
+#endif
+    if (rt_slash) *rt_slash = '\0'; else strcpy(runtime_dir, ".");
+
+    /* Build argv array. Owned heap-side so the loop bound (argc) doesn't
+     * leak into a fixed buffer. */
+    int    extra = (runtime == UB_RUNTIME_PHP) ? 4 : 2;  /* exe + maybe ["-c","ini"] + script + NULL */
+    int    user  = (argc > 1) ? (argc - 1) : 0;
+    char** spawn_argv = (char**)calloc((size_t)(extra + user + 1), sizeof(char*));
+    if (!spawn_argv) return -1;
+
+    char php_ini_path[1024];
+    int  ai = 0;
+    spawn_argv[ai++] = (char*)runtime_binary_path;
     if (runtime == UB_RUNTIME_PHP) {
-        // For PHP, use custom configuration that points to embedded extensions
-        char php_ini_path[1024];
-        char extensions_dir[1024];
-        
-        // Construct paths relative to the temp directory containing the runtime
-        char* runtime_dir = strdup(runtime_binary_path);
 #ifdef PLATFORM_WINDOWS
-        char* last_slash = strrchr(runtime_dir, '\\');
+        snprintf(php_ini_path, sizeof(php_ini_path), "%s\\php.ini", runtime_dir);
 #else
-        char* last_slash = strrchr(runtime_dir, '/');
+        snprintf(php_ini_path, sizeof(php_ini_path), "%s/php.ini", runtime_dir);
 #endif
-        if (last_slash) {
-            *last_slash = '\0';
-#ifdef PLATFORM_WINDOWS
-            snprintf(extensions_dir, sizeof(extensions_dir), "%s\\ext", runtime_dir);
-            snprintf(php_ini_path, sizeof(php_ini_path), "%s\\php.ini", runtime_dir);
-#else
-            snprintf(extensions_dir, sizeof(extensions_dir), "%s/ext", runtime_dir);
-            snprintf(php_ini_path, sizeof(php_ini_path), "%s/php.ini", runtime_dir);
-#endif
-        } else {
-            strcpy(extensions_dir, "./ext");
-            strcpy(php_ini_path, "./php.ini");
-        }
-        
-        // Use custom PHP configuration with complete isolation from host system
-#ifdef PLATFORM_WINDOWS
-        // On Windows, use set command to set environment variable
-        snprintf(command, sizeof(command), 
-                "set PHP_INI_SCAN_DIR= && \"%s\" -c \"%s\" \"%s\"%s", 
-                runtime_binary_path, php_ini_path, script_name, args_str);
-#else
-        // On Unix-like systems, use shell environment variable syntax
-        snprintf(command, sizeof(command), 
-                "PHP_INI_SCAN_DIR= \"%s\" -c \"%s\" \"%s\"%s", 
-                runtime_binary_path, php_ini_path, script_name, args_str);
-#endif
-        
-        free(runtime_dir);
-    } else if (runtime == UB_RUNTIME_PYTHON) {
-        // For Python, set PYTHONPATH to our cache directory for module resolution
-        char* runtime_dir = strdup(runtime_binary_path);
-#ifdef PLATFORM_WINDOWS
-        char* last_slash = strrchr(runtime_dir, '\\');
-#else
-        char* last_slash = strrchr(runtime_dir, '/');
-#endif
-        if (last_slash) {
-            *last_slash = '\0';
-        }
-        
-        // Set PYTHONPATH to include both Lib and site-packages from cache
-        char python_path[2048];
-#ifdef PLATFORM_WINDOWS
-        snprintf(python_path, sizeof(python_path), 
-                "set PYTHONPATH=%s\\Lib;%s\\Lib\\site-packages;%%PYTHONPATH%% && \"%s\" \"%s\"%s", 
-                runtime_dir, runtime_dir, runtime_binary_path, script_name, args_str);
-#else
-        snprintf(python_path, sizeof(python_path), 
-                "PYTHONPATH=%s/Lib:%s/Lib/site-packages:$PYTHONPATH \"%s\" \"%s\"%s", 
-                runtime_dir, runtime_dir, runtime_binary_path, script_name, args_str);
-#endif
-        strcpy(command, python_path);
-        
-        free(runtime_dir);
-    } else {
-        // For other runtimes, use standard execution
-        snprintf(command, sizeof(command), "\"%s\" \"%s\"%s", runtime_binary_path, script_name, args_str);
+        spawn_argv[ai++] = (char*)"-c";
+        spawn_argv[ai++] = php_ini_path;
     }
-    
+    spawn_argv[ai++] = script_name;
+    for (int i = 1; i < argc; i++) spawn_argv[ai++] = argv[i];
+    spawn_argv[ai] = NULL;
+
+    /* Build environment overlay. */
+    char  pythonpath[2200];
+    char* extra_env[3] = {NULL, NULL, NULL};
+    int   ei = 0;
+    if (runtime == UB_RUNTIME_PYTHON) {
+        const char* host_pp = getenv("PYTHONPATH");
 #ifdef PLATFORM_WINDOWS
-    // On Windows, use cmd /c to ensure proper execution
-    char cmd_command[2048 + 20];
-    snprintf(cmd_command, sizeof(cmd_command), "cmd /c \"%s\"", command);
-    int result = system(cmd_command);
+        snprintf(pythonpath, sizeof(pythonpath),
+                 "PYTHONPATH=%s\\Lib;%s\\Lib\\site-packages%s%s",
+                 runtime_dir, runtime_dir,
+                 host_pp ? ";" : "", host_pp ? host_pp : "");
 #else
-    int result = system(command);
+        snprintf(pythonpath, sizeof(pythonpath),
+                 "PYTHONPATH=%s/Lib:%s/Lib/site-packages%s%s",
+                 runtime_dir, runtime_dir,
+                 host_pp ? ":" : "", host_pp ? host_pp : "");
 #endif
-    
-    // Restore original working directory
-    if (chdir(original_dir) != 0) {
-        fprintf(stderr, "Warning: Failed to restore original directory\n");
+        extra_env[ei++] = pythonpath;
+    } else if (runtime == UB_RUNTIME_PHP) {
+        /* Empty PHP_INI_SCAN_DIR isolates from host extension scan. */
+        extra_env[ei++] = (char*)"PHP_INI_SCAN_DIR=";
     }
-    
+    extra_env[ei] = NULL;
+
+    char** env = pc_env_overlay(extra_env);
+    int result = pc_spawn_and_wait(runtime_binary_path, spawn_argv, env, cwd_for_child);
+    pc_env_free(env);
+    free(spawn_argv);
+
+    if (result < 0) {
+        fprintf(stderr, "Error: failed to spawn embedded %s runtime at %s\n",
+                runtime == UB_RUNTIME_PYTHON ? "python" :
+                runtime == UB_RUNTIME_PHP    ? "php"    :
+                runtime == UB_RUNTIME_NODEJS ? "node"   : "unknown",
+                runtime_binary_path);
+    }
     return result;
 }
 
@@ -759,24 +785,66 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
         return result;
     }
     
-    // 6. Write footer with embedded data info
-    // First write the data start offset (use uint64_t for cross-platform consistency)
+    /* 6. Compute SHA-256 over the payload [data_start_offset, payload_end).
+     * Per the Apple-sandbox principle: integrity at every boundary. The
+     * hash is verified before extraction at launch time; any tamper or
+     * truncation refuses to run instead of best-efforting through it. */
+    long payload_end = ftell(output_file);
+    if (payload_end < data_start_offset) {
+        fclose(output_file);
+        fprintf(stderr, "Error: Inconsistent payload bounds\n");
+        return UB_ERROR_UNKNOWN;
+    }
+    fclose(output_file);
+
+    FILE* hash_in = fopen(config->output_path, "rb");
+    if (!hash_in) {
+        fprintf(stderr, "Error: Failed to reopen output file for hashing\n");
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+    uint8_t payload_hash[UB_SHA256_DIGEST_SIZE];
+    long    payload_len = payload_end - data_start_offset;
+    if (ub_sha256_file_range(hash_in, data_start_offset, payload_len, payload_hash) != 0) {
+        fclose(hash_in);
+        fprintf(stderr, "Error: Failed to compute payload SHA-256\n");
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+    fclose(hash_in);
+
+    /* 7. Append the trailer. New V4 layout (S3):
+     *
+     *   [ payload ]
+     *   [ 32 bytes SHA-256(payload) ]
+     *   [ uint64_t data_start_offset ]
+     *   [ "UBUILDER_MODULAR_V4_SHA256_MARKER" ]
+     *   [ uint32_t magic 0xDEADBEEF ]
+     *   [ enum runtime ]
+     */
+    output_file = fopen(config->output_path, "ab");
+    if (!output_file) {
+        fprintf(stderr, "Error: Failed to reopen output file to write trailer\n");
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+    fwrite(payload_hash, 1, UB_SHA256_DIGEST_SIZE, output_file);
+
     uint64_t data_start_offset_64 = (uint64_t)data_start_offset;
     fwrite(&data_start_offset_64, sizeof(data_start_offset_64), 1, output_file);
-    
-    // Then write the marker
-    const char* modular_marker = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";
+
+    const char* modular_marker = "UBUILDER_MODULAR_V4_SHA256_MARKER";
     fwrite(modular_marker, 1, strlen(modular_marker), output_file);
-    
-    // Write magic number for validation
+
     uint32_t magic_number = 0xDEADBEEF;
     fwrite(&magic_number, sizeof(magic_number), 1, output_file);
-    
-    // Write runtime type
+
     fwrite(&config->runtime, sizeof(config->runtime), 1, output_file);
-    
+
     fclose(output_file);
-    
+
+    if (config->verbose) {
+        char hex[65];
+        ub_sha256_hex(payload_hash, hex);
+        printf("Payload SHA-256: %s\n", hex);
+    }
     printf("Successfully created modular %s executable: %s\n", builder->name, config->output_path);
     return UB_SUCCESS;
 }
@@ -973,14 +1041,10 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     // Execute the script using embedded runtime
     int exit_code = ub_execute_script_with_embedded_runtime(runtime, runtime_binary_path, main_script_path, argc, argv);
     
-    // Cleanup temporary directory
-    char cleanup_cmd[1024];
-#ifdef PLATFORM_WINDOWS
-    snprintf(cleanup_cmd, sizeof(cleanup_cmd), "rmdir /s /q \"%s\"", temp_dir);
-#else
-    snprintf(cleanup_cmd, sizeof(cleanup_cmd), "rm -rf %s", temp_dir);
-#endif
-    if (system(cleanup_cmd) != 0) {
+    /* S1: structured recursive remove instead of system("rm -rf …") /
+     * system("rmdir /s /q …"). Drops the /bin/sh & external-tool dependency
+     * and is safe with paths containing spaces, quotes, or shell metachars. */
+    if (pc_remove_tree(temp_dir) != 0) {
         fprintf(stderr, "Warning: Failed to clean up temporary directory: %s\n", temp_dir);
     }
     

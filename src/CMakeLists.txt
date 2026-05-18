@@ -6,6 +6,10 @@ add_library(ubuilder_core STATIC
     core/json_mini.h
     core/config.c
     core/config.h
+    core/platform_compat.c
+    core/platform_compat.h
+    core/sha256.c
+    core/sha256.h
     runtimes/runtime_manager.c
     runtimes/runtime_manager.h
     runtimes/python_runtime.c

@@ -4,6 +4,8 @@ add_executable(test_ubuilder
     test_core.c
     test_runtime_manager.c
     test_config.c
+    test_platform_compat.c
+    test_sha256.c
 )
 
 target_link_libraries(test_ubuilder ubuilder_core)

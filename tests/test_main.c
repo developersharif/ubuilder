@@ -20,6 +20,8 @@ int test_passed = 0;
 extern void test_core_functions(void);
 extern void test_runtime_manager(void);
 extern void test_config(void);
+extern void test_platform_compat(void);
+extern void test_sha256(void);
 
 int main(void) {
     printf("UBuilder Test Suite\n");
@@ -36,6 +38,8 @@ int main(void) {
     test_core_functions();
     test_runtime_manager();
     test_config();
+    test_platform_compat();
+    test_sha256();
     
     // Cleanup
     ub_cleanup();

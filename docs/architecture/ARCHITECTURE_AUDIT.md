@@ -4,6 +4,18 @@
 **Branch / commit:** `tests` @ `8b2adfa`
 **Scope:** Linux x86_64 first-class; macOS / Windows / arm64 sketched.
 **Tone:** Honest engineering review — gaps named, not softened.
+**Binding principle (Apple-sandbox discipline):** Every change must increase UBuilder's hermeticity, integrity, and isolation; never decrease them. Concretely:
+
+1. No `system()` / `popen()` / `/bin/sh` — not in the runtime path, not in the build path.
+2. No silent fallback to host tools. Missing embedded resources must fail loudly.
+3. Integrity at every boundary — SHA-256 (S3), eventually signatures (L5).
+4. Hermetic builds — bundle output is a function of declared inputs, not "whatever was installed on the build host."
+5. No host-environment leaks — overlay env explicitly, set cwd explicitly.
+6. Temp-dir isolation via structured `pc_remove_tree`, never `system("rm -rf")`.
+7. No `--no-verify`-style shortcuts on integrity checks.
+8. Every hermeticity claim earns a test.
+
+If a proposed change can't be justified against these, it doesn't ship.
 
 ---
 
@@ -79,7 +91,7 @@ Numbered so we can reference them later.
 
 **G2. Interpreter stdlib is not embedded on Unix.** Python without `Lib/`, PHP without its extension `.so`s, Node without its `node_modules` resolver wired correctly — none of these are real "interpreters." Only the executable byte is embedded on Linux/macOS.
 
-**G3. `system()` and `/bin/sh` dependence.** The runtime path still shells out for embedded-runtime invocation (the two remaining `system()` call sites in `ub_execute_script_with_embedded_runtime`). This adds a hard dependency on `/bin/sh` and on shell-quoting being safe. It also makes `argv` pass-through wrong: every arg is re-quoted into a single buffer with a 1024-byte cap, which both truncates and breaks args with embedded spaces or quotes. (S2 removed the *silent host-runtime fallback* — the secret `system("python3 …")` path that masked extraction failures — but the embedded-runtime call sites still use `system()`; S1 replaces them with `posix_spawnp` / `CreateProcessW`.)
+**G3. `system()` and `/bin/sh` dependence.** The runtime *execution* path is now `system()`-free (S1: `posix_spawnp` / `CreateProcess` via `pc_spawn_and_wait`, argv passed as an array, structured `pc_remove_tree` for cleanup). The remaining `system()`/`popen()` call sites live in build-time and extraction-time code: `runtime_embedder.c` shells out to `mkdir -p` in three places, and `php_builder.c` uses `popen("php-config --extension-dir")` for hermetic-build-breaking host discovery. Those are S4 (populate `pc_mkdir_p`, `pc_temp_root`) and S5 (drop `php-config`) work.
 
 **G4. No statically linked launcher.** The CLI itself is dynamically linked. Even if the interpreter were hermetic, the launcher's own glibc/libpthread/libdl deps still need to match the target.
 
@@ -87,9 +99,9 @@ Numbered so we can reference them later.
 
 **G6. Platform abstraction is missing.** `platform_compat.{c,h}` are 0 bytes. Every platform difference is open-coded via `#ifdef PLATFORM_WINDOWS` in 1000-line files. Adding macOS-specific behavior, arm64, or musl support requires editing every call site.
 
-**G7. Argv re-quoting is broken.** `args_str[1024]` (`ubuilder.c:498`, `ubuilder.c:540`) concatenated with `strncat` and a single space separator. Any arg containing a space, quote, `$`, or backslash will mis-parse. Any combined arg list over 1024 bytes is silently truncated.
+**G7. ~~Argv re-quoting is broken.~~** Fixed in S1. Argv is now passed as a real array through `pc_spawn_and_wait`; no re-quoting, no 1024-byte cap. The bundle harness covers spaces and single quotes.
 
-**G8. No version pinning, signatures, or integrity checks.** The bundle trailer is a magic number only — no SHA-256 of the payload, no signature, no rejection if the file was truncated. `runtime_embedder.c` doesn't verify `checksum` (defined in `ub_resource_t` but unused).
+**G8. ~~No integrity checks.~~** Fixed in S3 — every bundle carries a SHA-256 of its payload in the V4 trailer; the launcher verifies before extraction and refuses to run on mismatch (loud error, no fallback). Still open under G8: no Ed25519 signatures yet (L5), and `runtime_embedder.c`'s `ub_resource_t.checksum` field is still unused (small follow-up: wire it into per-resource extraction).
 
 **G9. No deduplicated runtime cache.** Each bundle ships its own copy of the interpreter (Python ≈ 8 MB, Node ≈ 80 MB). A user with 10 Node bundles ships 800 MB; first-run extraction cost compounds. The Windows Python path already half-acknowledges this with a `%LOCALAPPDATA%` cache (`runtime_embedder.c:678-730`) but the cache key is the bundle path, not a runtime hash — so two identical bundles still extract twice.
 
@@ -111,9 +123,9 @@ Numbered so we can reference them later.
 
 | Action | Reason | Touch points |
 |---|---|---|
-| **S1. Replace `system()` with `posix_spawnp` / `posix_spawn` + `argv` array on Unix, `CreateProcessW` on Windows.** | Removes `/bin/sh` dependency (G3), fixes argv quoting (G7), enables proper exit-code propagation. | `src/core/ubuilder.c:526,653,655` |
+| **S1. Replace `system()` with `posix_spawnp` / `posix_spawn` + `argv` array on Unix, `CreateProcessW` on Windows.** ✅ done (runtime path). | Removes `/bin/sh` dependency on the execution path (G3), fixes argv quoting (G7), enables proper exit-code propagation. Introduced `src/core/platform_compat.{c,h}` with `pc_spawn_and_wait` / `pc_remove_tree` / `pc_env_overlay` / `pc_env_free`. Rewrote `ub_execute_script_with_embedded_runtime` to build a real argv array (no re-quoting, no 1024-byte cap) and pass an environment overlay. Replaced `system("rm -rf …")` cleanup with `pc_remove_tree`. Bundle harness now passes args containing spaces and single quotes end-to-end. Build-time `system()`/`popen()` in `runtime_embedder.c` and `php_builder.c` remain — those are S4/S5. | `src/core/ubuilder.c`, `src/core/platform_compat.{c,h}` |
 | **S2. Delete the silent host-runtime fallback in `ub_execute_script()`.** ✅ done. | Eliminates the "secretly using host interpreter" footgun (G3); failures should be loud. Removed `ub_execute_script`, `ub_execute_embedded_app`, `ub_run_legacy_embedded_app`, and the legacy v2-marker scan in `ub_check_and_run_embedded_app`. Modern modular bundles are the only execution path; missing/broken embedded runtimes now surface as `UB_ERROR_EXTRACTION_FAILED` / `UB_ERROR_EXECUTION_FAILED` instead of being papered over by `system("python3 ...")`. | `src/core/ubuilder.c` |
-| **S3. Add SHA-256 over the payload, written into the trailer; verify on launch.** | G8. Bundles become tamper-evident; truncated downloads fail fast. | `src/core/ubuilder.c:894-907`, new `src/core/crypto.{c,h}` (use `picosha2` or a 200-line public-domain SHA256). |
+| **S3. Add SHA-256 over the payload, written into the trailer; verify on launch.** ✅ done. | G8. Bundles become tamper-evident; truncated/corrupt bundles fail fast with no fallback. | New `src/core/sha256.{c,h}` (public-domain FIPS 180-4 impl, ~150 LOC, NIST test vectors covered). V3 trailer bumped to V4 (`UBUILDER_MODULAR_V4_SHA256_MARKER`); old V3 bundles are intentionally rejected. Bundle harness now flips a byte in the file's payload region and asserts the bundle refuses to run with a clear `integrity check FAILED` diagnostic. |
 | **S4. Populate `src/core/platform_compat.{c,h}` with: `pc_spawn`, `pc_temp_dir`, `pc_mkdir_p`, `pc_remove_tree`, `pc_realpath`, `pc_executable_path`.** | Collapses dozens of `#ifdef PLATFORM_WINDOWS` blocks (G6). | New file + ripple through `ubuilder.c`, `runtime_embedder.c`. |
 | **S5. Remove `popen("php-config --extension-dir")`; require an explicit `--php-runtime-dir` flag.** | Non-hermetic build (G10); breaks reproducibility. | `src/runtimes/php_builder.c:444` |
 | **S6. Drop the empty `*.new` and 0-byte source files.** | Stale (G12). | `src/core/ubuilder.c.new`, `src/core/platform_compat.{c,h}` — keep the latter, but populate them per S4. |

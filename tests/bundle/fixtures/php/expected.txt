@@ -1,3 +1,3 @@
 ubuilder:php:hello
-argv:harness-arg-1,harness-arg-2
+argv:hello world,it's,ok
 sum:55

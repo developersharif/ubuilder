@@ -141,12 +141,15 @@ run_case() {
     cp "$bundle_out" "$run_dir/app"
     chmod +x "$run_dir/app"
 
-    # 3. run
+    # 3. run — pass tricky argv values to verify pass-through is correct.
+    #    "hello world" (embedded space) and "it's" (single quote) would both
+    #    break the pre-S1 system()/strncat path. The post-S1 posix_spawn
+    #    path delivers them verbatim.
     info "running bundle from $run_dir"
     local stdout_path="$case_work/stdout.txt"
     local stderr_path="$case_work/stderr.txt"
     local exit_code=0
-    ( cd "$run_dir" && ./app harness-arg-1 harness-arg-2 ) \
+    ( cd "$run_dir" && ./app "hello world" "it's" "ok" ) \
         >"$stdout_path" 2>"$stderr_path" || exit_code=$?
 
     # 4. assert
@@ -165,6 +168,34 @@ run_case() {
 
     if (( rc == 0 )); then
         ok "exit code 0 and stdout matches expected.txt"
+    fi
+
+    # 5. Tamper test (S3 — Apple-sandbox integrity rule).
+    #    Flip one byte in the middle of the file, which for our multi-MB
+    #    bundles is always inside the payload region (the launcher binary
+    #    is < 1 MB; the trailer is < 100 bytes at the tail). Post-S3
+    #    bundles MUST refuse to run with non-zero exit and a clear
+    #    "integrity check FAILED" diagnostic.
+    if (( rc == 0 )); then
+        local tamper_bin="$run_dir/app.tampered"
+        cp "$run_dir/app" "$tamper_bin"
+        local file_size; file_size="$(stat -c %s "$tamper_bin")"
+        local mid=$(( file_size / 2 ))
+        printf '\xAA' | dd of="$tamper_bin" bs=1 seek="$mid" count=1 conv=notrunc \
+            >/dev/null 2>&1
+        chmod +x "$tamper_bin"
+        local tamper_exit=0
+        ( "$tamper_bin" >/dev/null 2>"$case_work/tamper.stderr" ) || tamper_exit=$?
+        if (( tamper_exit == 0 )); then
+            fail "tampered bundle ran successfully — integrity check did not fire"
+            rc=1
+        elif ! grep -q 'integrity check FAILED' "$case_work/tamper.stderr"; then
+            fail "tampered bundle exited $tamper_exit but stderr lacks 'integrity check FAILED'"
+            sed 's/^/    [stderr] /' "$case_work/tamper.stderr" | tail -n 10
+            rc=1
+        else
+            ok "tampered bundle correctly refused to run (exit $tamper_exit, integrity error)"
+        fi
     fi
     return $rc
 }
