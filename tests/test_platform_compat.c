@@ -161,6 +161,29 @@ static void test_spawn_capture(void) {
     free(out);
 }
 
+static void test_temp_root(void) {
+    const char* t = pc_temp_root();
+    EXPECT("temp_root: returns non-null", t != NULL && *t != 0);
+    /* Should point at an existing directory (true for /tmp / $TMPDIR / $TEMP). */
+    struct stat st;
+    EXPECT("temp_root: points at a real directory",
+           t && stat(t, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR);
+}
+
+static void test_executable_path(void) {
+    char buf[1024];
+    int rc = pc_executable_path(buf, sizeof(buf));
+    EXPECT("executable_path: returns 0", rc == 0);
+    EXPECT("executable_path: writes a non-empty path", rc == 0 && buf[0] != 0);
+    /* The path must point to an existing file. */
+    EXPECT("executable_path: points at an existing file",
+           rc == 0 && access(buf, F_OK) == 0);
+    /* Buffer too small — must fail (don't underflow). */
+    char small[2];
+    EXPECT("executable_path: rejects too-small buffer",
+           pc_executable_path(small, sizeof(small)) != 0);
+}
+
 void test_platform_compat(void) {
     printf("\nPlatform compatibility shim tests\n");
     printf("---------------------------------\n");
@@ -171,4 +194,6 @@ void test_platform_compat(void) {
     test_mkdir_p();
     test_path_lookup();
     test_spawn_capture();
+    test_temp_root();
+    test_executable_path();
 }

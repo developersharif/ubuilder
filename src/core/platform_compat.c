@@ -20,6 +20,9 @@
   #include <sys/wait.h>
   #include <unistd.h>
   extern char** environ;
+  #ifdef __APPLE__
+    #include <mach-o/dyld.h>
+  #endif
 #endif
 
 /* ============================================================
@@ -338,6 +341,54 @@ void pc_env_free(char** env) {
     if (!env) return;
     for (size_t i = 0; env[i]; i++) free(env[i]);
     free(env);
+}
+
+/* ============================================================
+ * pc_temp_root
+ * ============================================================ */
+
+const char* pc_temp_root(void) {
+#ifdef _WIN32
+    const char* t = getenv("TEMP");
+    if (!t || !*t) t = getenv("TMP");
+    if (!t || !*t) t = "C:\\Temp";
+    return t;
+#else
+    const char* t = getenv("TMPDIR");
+    if (!t || !*t) t = getenv("TMP");
+    if (!t || !*t) t = "/tmp";
+    return t;
+#endif
+}
+
+/* ============================================================
+ * pc_executable_path
+ * ============================================================ */
+
+int pc_executable_path(char* out, size_t out_cap) {
+    if (!out || out_cap < 2) return -1;
+#ifdef _WIN32
+    DWORD n = GetModuleFileNameA(NULL, out, (DWORD)out_cap);
+    if (n == 0 || n >= out_cap) return -1;
+    return 0;
+#elif defined(__APPLE__)
+    uint32_t sz = (uint32_t)out_cap;
+    if (_NSGetExecutablePath(out, &sz) != 0) return -1;
+    out[out_cap - 1] = 0;
+    return 0;
+#else
+    /* readlink does not NUL-terminate and silently truncates. Probe with a
+     * scratch buffer one byte larger than `out_cap` so we can detect that
+     * the real path didn't fit, instead of returning a truncated string. */
+    char  scratch[4096];
+    if (out_cap - 1 >= sizeof(scratch)) return -1;  /* unrealistic ask */
+    ssize_t n = readlink("/proc/self/exe", scratch, sizeof(scratch));
+    if (n < 0 || n >= (ssize_t)sizeof(scratch)) return -1;
+    if ((size_t)n >= out_cap) return -1;   /* truncation — refuse */
+    memcpy(out, scratch, (size_t)n);
+    out[n] = 0;
+    return 0;
+#endif
 }
 
 /* ============================================================

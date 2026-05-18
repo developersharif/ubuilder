@@ -31,10 +31,7 @@
 #endif
 
 // Forward declarations
-static ub_result_t validate_project_directory(const ub_config_t* config);
 static ub_result_t copy_executable_template(const char* output_path);
-static ub_result_t embed_project_files(const ub_config_t* config);
-static ub_result_t embed_directory_recursive(const char* dir_path, FILE* output_file);
 static ub_result_t create_modular_executable(const ub_config_t* config);
 static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* data_file, int argc, char* argv[]);
 
@@ -281,28 +278,12 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     ub_runtime_type_t runtime;
     ub_result_t result = UB_ERROR_RUNTIME_NOT_FOUND;
     
-    // Get path to current executable
+    /* Get path to current executable (S4: via pc_executable_path). */
     char exe_path[1024];
-#ifdef PLATFORM_LINUX
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len == -1) {
-        // Unable to get executable path - not an embedded app
+    if (pc_executable_path(exe_path, sizeof(exe_path)) != 0) {
         return UB_ERROR_RUNTIME_NOT_FOUND;
     }
-    exe_path[len] = '\0';
-#elif defined(PLATFORM_WINDOWS)
-    if (GetModuleFileName(NULL, exe_path, sizeof(exe_path)) == 0) {
-        // Unable to get executable path - not an embedded app
-        return UB_ERROR_RUNTIME_NOT_FOUND;
-    }
-#elif defined(PLATFORM_MACOS)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) != 0) {
-        // Unable to get executable path - not an embedded app
-        return UB_ERROR_RUNTIME_NOT_FOUND;
-    }
-#endif
-    
+
     self_file = fopen(exe_path, "rb");
     if (!self_file) {
         // Unable to open executable - not an embedded app
@@ -416,22 +397,7 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     return UB_ERROR_RUNTIME_NOT_FOUND;
 }
 
-// Function to get cross-platform temporary directory
-static const char* get_temp_dir(void) {
-    const char* temp_dir = NULL;
-    
-#ifdef PLATFORM_WINDOWS
-    temp_dir = getenv("TEMP");
-    if (!temp_dir) temp_dir = getenv("TMP");
-    if (!temp_dir) temp_dir = "C:\\temp";
-#else
-    temp_dir = getenv("TMPDIR");
-    if (!temp_dir) temp_dir = getenv("TMP");
-    if (!temp_dir) temp_dir = "/tmp";
-#endif
-    
-    return temp_dir;
-}
+/* S4: get_temp_dir() collapsed into pc_temp_root() in platform_compat. */
 
 /* S2 (audit): removed `ub_execute_embedded_app` and `ub_execute_script`.
  * Both were unconditional fallbacks to host runtimes via
@@ -558,35 +524,9 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime,
     return result;
 }
 
-// Helper function to validate project directory
-static ub_result_t validate_project_directory(const ub_config_t* config) {
-    struct stat st;
-    
-    // Check if project directory exists
-    if (stat(config->project_dir, &st) != 0) {
-        fprintf(stderr, "Error: Project directory does not exist: %s\n", config->project_dir);
-        return UB_ERROR_FILE_NOT_FOUND;
-    }
-    
-    if (!S_ISDIR(st.st_mode)) {
-        fprintf(stderr, "Error: Project path is not a directory: %s\n", config->project_dir);
-        return UB_ERROR_INVALID_ARGS;
-    }
-    
-    // Check if entry point exists (if specified)
-    if (config->entry_point) {
-        char entry_path[1024];
-        snprintf(entry_path, sizeof(entry_path), "%s%s%s", 
-                config->project_dir, PATH_SEPARATOR, config->entry_point);
-        
-        if (stat(entry_path, &st) != 0) {
-            fprintf(stderr, "Error: Entry point file not found: %s\n", entry_path);
-            return UB_ERROR_FILE_NOT_FOUND;
-        }
-    }
-    
-    return UB_SUCCESS;
-}
+/* S6 (audit): `validate_project_directory` was a dead static — the per-
+ * builder `validate_project()` (e.g., python_builder.validate_project)
+ * supersedes it. Deleted with its forward decl. */
 
 // Helper function to copy the current executable as a template
 static ub_result_t copy_executable_template(const char* output_path) {
@@ -595,25 +535,12 @@ static ub_result_t copy_executable_template(const char* output_path) {
     size_t bytes_read;
     ub_result_t result = UB_SUCCESS;
     
-    // Get the path of the current executable
+    /* S4: collapsed via pc_executable_path. */
     char exe_path[1024];
-#ifdef PLATFORM_LINUX
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (len == -1) {
+    if (pc_executable_path(exe_path, sizeof(exe_path)) != 0) {
         return UB_ERROR_FILE_NOT_FOUND;
     }
-    exe_path[len] = '\0';
-#elif defined(PLATFORM_WINDOWS)
-    if (GetModuleFileName(NULL, exe_path, sizeof(exe_path)) == 0) {
-        return UB_ERROR_FILE_NOT_FOUND;
-    }
-#elif defined(PLATFORM_MACOS)
-    uint32_t size = sizeof(exe_path);
-    if (_NSGetExecutablePath(exe_path, &size) != 0) {
-        return UB_ERROR_FILE_NOT_FOUND;
-    }
-#endif
-    
+
     src = fopen(exe_path, "rb");
     if (!src) {
         return UB_ERROR_FILE_NOT_FOUND;
@@ -646,80 +573,10 @@ static ub_result_t copy_executable_template(const char* output_path) {
     return result;
 }
 
-// Helper function to embed project files into the executable
-static ub_result_t embed_project_files(const ub_config_t* config) {
-    FILE *output_file;
-    char marker[] = "UBUILDER_DATA_MARKER";
-    
-    // Open the output file in append mode
-    output_file = fopen(config->output_path, "ab");
-    if (!output_file) {
-        return UB_ERROR_EXTRACTION_FAILED;
-    }
-    
-    // Write data marker
-    fwrite(marker, 1, strlen(marker), output_file);
-    
-    // Write runtime type
-    fwrite(&config->runtime, sizeof(config->runtime), 1, output_file);
-    
-    // Write entry point
-    if (config->entry_point) {
-        uint32_t entry_len = (uint32_t)strlen(config->entry_point);
-        fwrite(&entry_len, sizeof(entry_len), 1, output_file);
-        fwrite(config->entry_point, 1, entry_len, output_file);
-    } else {
-        uint32_t entry_len = 0;
-        fwrite(&entry_len, sizeof(entry_len), 1, output_file);
-    }
-    
-    // Embed project files
-    ub_result_t result = embed_directory_recursive(config->project_dir, output_file);
-    
-    fclose(output_file);
-    return result;
-}
-
-// Helper function to recursively embed directory contents
-static ub_result_t embed_directory_recursive(const char* dir_path, FILE* output_file) {
-    // For Phase 2, we'll implement a simple file embedding
-    // In Phase 3, this will be more sophisticated
-    
-    char script_path[1024];
-    struct stat st;
-    
-    // For now, just embed the main script file if it exists
-    const char* extensions[] = {".py", ".php", ".js", NULL};
-    
-    for (int i = 0; extensions[i]; i++) {
-        snprintf(script_path, sizeof(script_path), "%s/main%s", dir_path, extensions[i]);
-        
-        if (stat(script_path, &st) == 0) {
-            FILE* script_file = fopen(script_path, "rb");
-            if (script_file) {
-                // Write file size
-                uint32_t file_size = st.st_size;
-                fwrite(&file_size, sizeof(file_size), 1, output_file);
-                
-                // Write file content
-                char buffer[8192];
-                size_t bytes_read;
-                while ((bytes_read = fread(buffer, 1, sizeof(buffer), script_file)) > 0) {
-                    fwrite(buffer, 1, bytes_read, output_file);
-                }
-                
-                fclose(script_file);
-                return UB_SUCCESS;
-            }
-        }
-    }
-    
-    // No main script found, write empty file
-    uint32_t file_size = 0;
-    fwrite(&file_size, sizeof(file_size), 1, output_file);
-    
-    return UB_SUCCESS;
-}
+/* S6 (audit): `embed_project_files` + `embed_directory_recursive` deleted.
+ * They wrote the legacy v2 `UBUILDER_DATA_MARKER` format, which S2 already
+ * removed the *reader* for. They were never wired to a caller in modular
+ * V3/V4 builds (the per-builder `embed_application` does this work today). */
 
 // Main function to create modular runtime-specific executable (Phase 3)
 static ub_result_t create_modular_executable(const ub_config_t* config) {
@@ -857,7 +714,7 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     ub_result_t result;
     
     // Create temporary directory
-    const char* base_temp_dir = get_temp_dir();
+    const char* base_temp_dir = pc_temp_root();
 #ifdef PLATFORM_WINDOWS
     snprintf(temp_dir, sizeof(temp_dir), "%s\\ubuilder-%d", base_temp_dir, getpid());
 #else

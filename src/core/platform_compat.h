@@ -91,6 +91,23 @@ int pc_spawn_capture(const char* exe,
                      size_t      max_bytes,
                      char**      out);
 
+/*
+ * Return the conventional temporary-directory root for this OS:
+ *   POSIX  : $TMPDIR or $TMP if set, otherwise "/tmp".
+ *   Windows: %TEMP% or %TMP% if set, otherwise "C:\\Temp".
+ * The returned pointer references either an environment string or a
+ * static fallback; do not free.
+ */
+const char* pc_temp_root(void);
+
+/*
+ * Write the absolute path to the currently-running executable into `out`
+ * (NUL-terminated, truncated to `out_cap-1` if necessary). Returns 0 on
+ * success, -1 on failure. Backs `/proc/self/exe` on Linux,
+ * `_NSGetExecutablePath` on macOS, `GetModuleFileNameA` on Windows.
+ */
+int pc_executable_path(char* out, size_t out_cap);
+
 #ifdef __cplusplus
 }
 #endif
