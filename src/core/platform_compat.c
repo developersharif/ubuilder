@@ -460,6 +460,76 @@ int pc_mkdir_p(const char* path) {
 }
 
 /* ============================================================
+ * pc_copy_or_link_tree
+ * ============================================================ */
+
+#ifdef _WIN32
+int pc_copy_or_link_tree(const char* src, const char* dst) {
+    (void)src; (void)dst;
+    /* Windows staging support is M8-port territory; not needed until
+     * Windows hermetic mode lands. */
+    return -1;
+}
+#else
+static int copy_or_link_file(const char* src, const char* dst, mode_t mode) {
+    if (link(src, dst) == 0) return 0;
+    if (errno != EXDEV && errno != EPERM && errno != EACCES) return -1;
+    /* Fall back to byte copy. */
+    FILE* in = fopen(src, "rb");
+    if (!in) return -1;
+    FILE* out = fopen(dst, "wb");
+    if (!out) { fclose(in); return -1; }
+    char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { fclose(in); fclose(out); return -1; }
+    }
+    fclose(in);
+    fclose(out);
+    chmod(dst, mode & 0xFFFu);
+    return 0;
+}
+
+int pc_copy_or_link_tree(const char* src, const char* dst) {
+    if (!src || !dst) return -1;
+    struct stat st;
+    if (lstat(src, &st) != 0) return -1;
+    if (S_ISLNK(st.st_mode)) {
+        char target[2048];
+        ssize_t n = readlink(src, target, sizeof(target) - 1);
+        if (n < 0) return -1;
+        target[n] = 0;
+        if (symlink(target, dst) != 0 && errno != EEXIST) return -1;
+        return 0;
+    }
+    if (S_ISREG(st.st_mode)) {
+        return copy_or_link_file(src, dst, st.st_mode);
+    }
+    if (!S_ISDIR(st.st_mode)) return 0;  /* skip special files */
+
+    if (pc_mkdir_p(dst) != 0) return -1;
+    DIR* d = opendir(src);
+    if (!d) return -1;
+    struct dirent* de;
+    int rc = 0;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        size_t sl = strlen(src), nl = strlen(de->d_name);
+        char* sp = (char*)malloc(sl + nl + 2);
+        char* dp = (char*)malloc(strlen(dst) + nl + 2);
+        if (!sp || !dp) { free(sp); free(dp); rc = -1; break; }
+        snprintf(sp, sl + nl + 2, "%s/%s", src, de->d_name);
+        snprintf(dp, strlen(dst) + nl + 2, "%s/%s", dst, de->d_name);
+        if (pc_copy_or_link_tree(sp, dp) != 0) rc = -1;
+        free(sp); free(dp);
+        if (rc != 0) break;
+    }
+    closedir(d);
+    return rc;
+}
+#endif
+
+/* ============================================================
  * pc_path_lookup
  * ============================================================ */
 

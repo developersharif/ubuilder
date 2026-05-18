@@ -1,5 +1,6 @@
 #include "runtime_builder.h"
 #include "runtime_embedder.h"
+#include "../core/platform_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,11 +58,139 @@ static void python_embed_directory_recursive(const char* dir_path, const char* b
  * On POSIX every path produces a V5 tree-format payload (uniform launcher
  * extraction). On Windows we still defer to the legacy multi-file embed.
  */
+#ifndef PLATFORM_WINDOWS
+/* M8: locate <runtime_dir>/lib/python3.X/site-packages by globbing the
+ * versioned lib dir. python-build-standalone ships exactly one. Returns
+ * 0 on success and writes the path into `out`, -1 if not found. */
+static int python_find_site_packages(const char* runtime_dir, char* out, size_t out_cap) {
+    char lib_dir[1024];
+    snprintf(lib_dir, sizeof(lib_dir), "%s/lib", runtime_dir);
+    DIR* d = opendir(lib_dir);
+    if (!d) return -1;
+    struct dirent* de;
+    int rc = -1;
+    while ((de = readdir(d)) != NULL) {
+        if (strncmp(de->d_name, "python3.", 8) != 0) continue;
+        int n = snprintf(out, out_cap, "%s/%s/site-packages", lib_dir, de->d_name);
+        if (n < 0 || (size_t)n >= out_cap) continue;
+        struct stat st;
+        if (stat(out, &st) == 0 && S_ISDIR(st.st_mode)) { rc = 0; break; }
+    }
+    closedir(d);
+    return rc;
+}
+
+/* M8: pip-install the project's requirements.txt into <staged>/lib/.../site-packages.
+ * Uses the staged interpreter (not the host's) to ensure deps are installed for
+ * the right Python version. Returns UB_SUCCESS or UB_ERROR_EXECUTION_FAILED. */
+static ub_result_t python_pip_install(const char* staged_runtime, const char* requirements_path) {
+    char interpreter[1024];
+    snprintf(interpreter, sizeof(interpreter), "%s/bin/python3", staged_runtime);
+    /* python-build-standalone's bin/python3 is a symlink that didn't survive
+     * the staging copy if hardlinked across devices — try the versioned name. */
+    struct stat st;
+    if (stat(interpreter, &st) != 0) {
+        DIR* d = opendir(staged_runtime);
+        if (d) closedir(d);
+        char bin_dir[1024];
+        snprintf(bin_dir, sizeof(bin_dir), "%s/bin", staged_runtime);
+        DIR* bd = opendir(bin_dir);
+        if (bd) {
+            struct dirent* de;
+            while ((de = readdir(bd)) != NULL) {
+                if (strncmp(de->d_name, "python3.", 8) == 0) {
+                    snprintf(interpreter, sizeof(interpreter), "%s/%s", bin_dir, de->d_name);
+                    break;
+                }
+            }
+            closedir(bd);
+        }
+    }
+
+    char site_packages[1024];
+    if (python_find_site_packages(staged_runtime, site_packages, sizeof(site_packages)) != 0) {
+        fprintf(stderr, "Error: could not locate site-packages in %s\n", staged_runtime);
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+
+    printf("Installing dependencies from %s into staged runtime\n", requirements_path);
+    printf("  interpreter: %s\n", interpreter);
+    printf("  target:      %s\n", site_packages);
+
+    char* argv[] = {
+        interpreter,
+        (char*)"-m", (char*)"pip", (char*)"install",
+        (char*)"--disable-pip-version-check",
+        (char*)"--no-warn-script-location",
+        (char*)"--target", site_packages,
+        (char*)"-r", (char*)requirements_path,
+        NULL
+    };
+    int rc = pc_spawn_and_wait(interpreter, argv, NULL, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "Error: pip install failed (exit %d). Bundle build aborted.\n", rc);
+        return UB_ERROR_EXECUTION_FAILED;
+    }
+    return UB_SUCCESS;
+}
+
+/* M8: orchestrate "stage the cached runtime, pip-install deps, return the
+ * staged path (caller embeds from there and removes it after)". When the
+ * project has no requirements.txt, returns UB_SUCCESS with *out_staged
+ * left NULL so the caller embeds the cache tree directly.
+ *
+ * The stage uses hardlinks where possible (pc_copy_or_link_tree) so the
+ * 32 MB Python tree is almost-free to clone; pip's --target= writes
+ * only new files, never mutates existing inodes. */
+static ub_result_t python_maybe_stage_with_deps(const ub_config_t* config,
+                                                const char* runtime_dir,
+                                                char**      out_staged) {
+    *out_staged = NULL;
+    if (!config || config->no_install_deps) return UB_SUCCESS;
+
+    char req_path[1024];
+    snprintf(req_path, sizeof(req_path), "%s/requirements.txt", config->project_dir);
+    struct stat st;
+    if (stat(req_path, &st) != 0 || !S_ISREG(st.st_mode)) return UB_SUCCESS;  /* nothing to install */
+
+    /* Build a staging path under the cache's parent so hardlinks work
+     * (same filesystem). $XDG_CACHE_HOME/ubuilder/stage/build-<pid>. */
+    const char* xdg = getenv("XDG_CACHE_HOME");
+    const char* home = getenv("HOME");
+    char stage[1024];
+    if (xdg && *xdg)        snprintf(stage, sizeof(stage), "%s/ubuilder/stage/build-%d",        xdg,  (int)getpid());
+    else if (home && *home) snprintf(stage, sizeof(stage), "%s/.cache/ubuilder/stage/build-%d", home, (int)getpid());
+    else                    snprintf(stage, sizeof(stage), "/tmp/ubuilder-stage-%d",                  (int)getpid());
+
+    /* Wipe any prior leftover at this path. */
+    pc_remove_tree(stage);
+
+    printf("Staging hermetic Python tree for dependency install:\n");
+    printf("  source: %s\n", runtime_dir);
+    printf("  stage:  %s\n", stage);
+    if (pc_copy_or_link_tree(runtime_dir, stage) != 0) {
+        fprintf(stderr, "Error: failed to stage runtime at %s\n", stage);
+        pc_remove_tree(stage);
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+
+    ub_result_t rc = python_pip_install(stage, req_path);
+    if (rc != UB_SUCCESS) {
+        pc_remove_tree(stage);
+        return rc;
+    }
+
+    *out_staged = strdup(stage);
+    return UB_SUCCESS;
+}
+#endif
+
 static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_file) {
     ub_result_t result;
 
 #ifndef PLATFORM_WINDOWS
-    /* M1: hermetic mode if --runtime-source points at a directory. */
+    /* M1 + M8: hermetic mode if --runtime-source points at a directory,
+     * with optional dep-staging when requirements.txt is present. */
     if (config && config->runtime_source) {
         struct stat st;
         if (stat(config->runtime_source, &st) != 0) {
@@ -70,7 +199,13 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
         }
         if (S_ISDIR(st.st_mode)) {
             printf("Embedding hermetic Python tree: %s\n", config->runtime_source);
-            return ub_embed_runtime_tree(config->runtime_source, output_file);
+            char* staged = NULL;
+            ub_result_t rc = python_maybe_stage_with_deps(config, config->runtime_source, &staged);
+            if (rc != UB_SUCCESS) return rc;
+            const char* src = staged ? staged : config->runtime_source;
+            rc = ub_embed_runtime_tree(src, output_file);
+            if (staged) { pc_remove_tree(staged); free(staged); }
+            return rc;
         }
         if (S_ISREG(st.st_mode)) {
             printf("Embedding user-chosen Python binary: %s\n", config->runtime_source);
@@ -87,7 +222,13 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
         if (ub_runtime_cache_lookup("python", "bin/python3", cached, sizeof(cached)) == 0) {
             printf("Embedding hermetic Python tree (auto-discovered): %s\n", cached);
             printf("  (run `ubuilder --use-host-runtime …` to skip auto-discovery)\n");
-            return ub_embed_runtime_tree(cached, output_file);
+            char* staged = NULL;
+            ub_result_t rc = python_maybe_stage_with_deps(config, cached, &staged);
+            if (rc != UB_SUCCESS) return rc;
+            const char* src = staged ? staged : cached;
+            rc = ub_embed_runtime_tree(src, output_file);
+            if (staged) { pc_remove_tree(staged); free(staged); }
+            return rc;
         }
     }
 #endif

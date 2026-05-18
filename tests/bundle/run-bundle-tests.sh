@@ -304,6 +304,78 @@ for rt in "${REQUESTED[@]}"; do
     esac
 done
 
+# M8 (dependency install). The dep-bundling proof: a fixture that imports
+# `attrs` (not in the stdlib) is pip-installed into the staged hermetic
+# runtime, then runs with PATH stripped. Network required at build time.
+run_m8_deps_case() {
+    local hermetic_dir
+    hermetic_dir="$(find "$RUNTIMES_CACHE/python" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    log ""
+    log "── python-with-deps (M8: pip install into hermetic tree) ──"
+    if [[ -z "$hermetic_dir" || ! -x "$hermetic_dir/bin/python3" ]]; then
+        warn "vendored Python missing; run scripts/vendor-runtimes.sh python first"
+        return 0
+    fi
+
+    local fdir="$FIXTURE_DIR/python-with-deps"
+    local cw="$WORK_DIR/python-with-deps"
+    mkdir -p "$cw/build" "$cw/run"
+    info "fixture: $fdir (requirements.txt → attrs==23.2.0)"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/build/app" \
+            >"$cw/build.log" 2>&1; then
+        fail "ubuilder build failed (see $cw/build.log)"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    ok "bundle built ($(du -h "$cw/build/app" | cut -f1))"
+
+    cp "$cw/build/app" "$cw/run/app"
+    chmod +x "$cw/run/app"
+
+    local fake_path; fake_path="$(mktemp -d)"
+    local exit_code=0
+    ( cd "$cw/run" && PATH="$fake_path" ./app "hello world" "it's" "ok" ) \
+        >"$cw/stdout.txt" 2>"$cw/stderr.txt" || exit_code=$?
+    rmdir "$fake_path"
+
+    local rc=0
+    if (( exit_code != 0 )); then
+        fail "exit $exit_code (expected 0)"
+        sed 's/^/    [stderr] /' "$cw/stderr.txt" | tail -n 10
+        rc=1
+    fi
+    if ! diff -u "$fdir/expected.txt" "$cw/stdout.txt" >"$cw/stdout.diff" 2>&1; then
+        fail "stdout differs"
+        sed 's/^/    /' "$cw/stdout.diff" | head -n 30
+        rc=1
+    fi
+
+    # Assert the cache stayed clean — `attrs` must NOT have been installed
+    # into the shared vendored tree. M8's staging promise is broken if it has.
+    if [[ -d "$hermetic_dir/lib" ]]; then
+        if find "$hermetic_dir/lib" -name 'attrs' -type d 2>/dev/null | grep -q .; then
+            fail "vendored cache was polluted with 'attrs' — staging did not isolate"
+            rc=1
+        fi
+    fi
+
+    if (( rc == 0 )); then
+        ok "bundle imports attrs (installed at build), runs with PATH stripped, cache untouched"
+    fi
+    return $rc
+}
+
+# M8 only meaningful when python is in the requested list (or default-all).
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "python" ]]; then
+        run_m8_deps_case || ((failures++))
+        break
+    fi
+done
+
 log ""
 if (( failures == 0 )); then
     log "${C_GRN}all bundle tests passed${C_RST}"

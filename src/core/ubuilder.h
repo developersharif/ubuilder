@@ -78,6 +78,10 @@ typedef struct {
      * (today's pre-M1 behavior, NOT portable). When set, suppresses cache
      * auto-discovery and falls straight to host probe. */
     int   use_host_runtime;
+    /* M8: when set, skip installing user dependencies (requirements.txt,
+     * etc.) into the embedded runtime. Default is auto-install when a
+     * dependency manifest is present in the project directory. */
+    int   no_install_deps;
 } ub_config_t;
 
 // Embedded resource structure

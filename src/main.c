@@ -17,6 +17,7 @@ static struct option long_options[] = {
     {"config",            required_argument, 0,  1 },
     {"runtime-source",    required_argument, 0,  2 },
     {"use-host-runtime",  no_argument,       0,  3 },
+    {"no-install-deps",   no_argument,       0,  4 },
     {"gui",               no_argument,       0, 'g'},
     {"verbose",     no_argument,       0, 'v'},
     {"help",        no_argument,       0, 'h'},
@@ -43,6 +44,10 @@ static void print_usage(const char* program_name) {
     printf("      --use-host-runtime    Explicit opt-in to use the host's interpreter.\n");
     printf("                            Skips cache auto-discovery. Bundle will NOT be portable.\n");
     printf("                            Useful for fast local dev iteration.\n");
+    printf("      --no-install-deps     Skip installing user dependencies into the embedded\n");
+    printf("                            runtime. Default: when requirements.txt (Python) is\n");
+    printf("                            present in the project, deps are pip-installed into a\n");
+    printf("                            staged copy of the vendored runtime before bundling.\n");
     printf("  -g, --gui                 Enable GUI support\n");
     printf("  -v, --verbose             Enable verbose output\n");
     printf("  -h, --help                Show this help message\n");
@@ -120,6 +125,9 @@ static ub_result_t parse_arguments(int argc, char* argv[],
         } else if (strcmp(arg, "--use-host-runtime") == 0) {
             config->use_host_runtime = 1;
             presence->use_host_runtime = 1;
+        } else if (strcmp(arg, "--no-install-deps") == 0) {
+            config->no_install_deps = 1;
+            presence->no_install_deps = 1;
         } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
             presence->gui = 1;
@@ -172,6 +180,10 @@ static ub_result_t parse_arguments(int argc, char* argv[],
             case 3: /* --use-host-runtime */
                 config->use_host_runtime = 1;
                 presence->use_host_runtime = 1;
+                break;
+            case 4: /* --no-install-deps */
+                config->no_install_deps = 1;
+                presence->no_install_deps = 1;
                 break;
             case 'g':
                 config->enable_gui = 1;

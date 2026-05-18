@@ -64,6 +64,21 @@ void   pc_env_free(char** env);
 int pc_mkdir_p(const char* path);
 
 /*
+ * Recursive copy `src` → `dst`. On POSIX, regular files are hardlinked
+ * where possible (`link(2)`) and fall back to a byte-copy on EXDEV /
+ * EPERM (cross-device or non-writable destination). Symlinks are
+ * preserved verbatim (we do NOT follow them). Modes are preserved.
+ *
+ * Used by M8 to stage a writable copy of the vendored runtime so user
+ * dependencies can be `pip install`'d into it without polluting the
+ * shared cache. Hardlinking makes the stage almost-free; pip's
+ * --target= writes only new files, so existing inodes are not modified.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+int pc_copy_or_link_tree(const char* src, const char* dst);
+
+/*
  * Search the current process's PATH for an executable named `exe`. On
  * POSIX this iterates $PATH split on ':' and tests access(p, X_OK). On
  * Windows it iterates %PATH% split on ';' and tries common extensions

@@ -18,6 +18,7 @@ This directory contains comprehensive documentation for the Universal Executable
 - [Config File Spec (`ubuilder.json`)](architecture/CONFIG_FILE_SPEC.md) — schema, discovery, and CLI/config precedence for the planned config-file loader
 - [Static Launcher (S8)](architecture/STATIC_LAUNCHER.md) — how to build the launcher with `-DUBUILDER_STATIC=ON` so it has zero shared-library deps, and the musl toolchain for hermetic distribution builds
 - [Hermetic Interpreters (M1)](architecture/M1_HERMETIC_INTERPRETERS.md) — vendoring strategy, bundle-format change, `--runtime-source` plumbing, and Tier-3 plan
+- [User Dependency Install (M8)](architecture/M8_USER_DEPS.md) — staging the runtime, pip-installing `requirements.txt` into a hermetic tree without polluting the shared cache
 
 ### Guides
 - [Project Instructions](guides/project-instructions.md)
