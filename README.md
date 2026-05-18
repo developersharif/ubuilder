@@ -105,7 +105,7 @@ ubuilder/
 
 Currently in **Phase 1: Foundation** - Basic embedding and Python runtime support.
 
-See [ProjectInstructions.md](ProjectInstructions.md) for detailed project roadmap.
+See [docs/guides/project-instructions.md](docs/guides/project-instructions.md) for detailed project roadmap.
 
 ## License
 

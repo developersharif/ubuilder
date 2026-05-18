@@ -1,46 +1,91 @@
-# Build outputs
+# ---------- Build outputs ----------
 build/
+build-*/
+out/
 dist/
 example-builds/
+examples/output/
+test_project/build/
 
-# CMake
+# ---------- CMake ----------
 CMakeCache.txt
 CMakeFiles/
+CMakeScripts/
 cmake_install.cmake
+CTestTestfile.cmake
 Makefile
 *.cmake
 
-# Compiled binaries
+# ---------- Compiled binaries / objects ----------
+*.o
+*.obj
 *.exe
+*.out
+*.app
 *.dll
 *.so
+*.so.*
 *.dylib
 *.a
 *.lib
+*.la
+*.lo
+*.slo
+*.gch
+*.pch
 
-# Temporary files
-*.tmp
-*.temp
-.DS_Store
-Thumbs.db
-
-# IDE files
-.vscode/
-.idea/
+# ---------- Editor scratch & backups ----------
 *.swp
 *.swo
 *~
+*.bak
+*.orig
+*.new
+*.rej
 
-# Runtime extraction directories
+# ---------- IDE / tooling ----------
+.vscode/
+.idea/
+*.iml
+.cache/
+compile_commands.json
+.clangd/
+
+# ---------- OS junk ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Temporary / runtime ----------
+*.tmp
+*.temp
 /tmp/ubuilder-*
 %TEMP%\ubuilder-*
 
-# Test outputs
-test_results.xml
+# ---------- Logs & test outputs ----------
 *.log
+logs/
+test_results.xml
+*.gcov
+*.gcda
+*.gcno
+coverage/
 
-# Package managers
+# ---------- Package managers / vendored deps ----------
 node_modules/
+vendor/
+
+# ---------- Python ----------
 __pycache__/
 *.pyc
-vendor/
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+
+# ---------- Project-specific tooling ----------
+.code-review-graph/
+.claude/

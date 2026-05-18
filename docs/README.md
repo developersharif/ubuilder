@@ -4,17 +4,33 @@ This directory contains comprehensive documentation for the Universal Executable
 
 ## Documentation Structure
 
+### Core docs
 - [Getting Started](getting-started.md) - Quick start guide and installation
-- [API Reference](api-reference.md) - Complete API documentation
+- [Quick Start](quick-start.md) - Minimal walkthrough
+- [CLI Reference](cli-reference.md) - Command-line interface reference
 - [Architecture](architecture.md) - Technical architecture and design
-- [Build System](build-system.md) - Build system documentation
-- [Runtime Guide](runtime-guide.md) - Runtime-specific documentation
 - [Examples](examples.md) - Example applications and tutorials
+- [Releases](releases.md) - Release notes
 - [Troubleshooting](troubleshooting.md) - Common issues and solutions
+
+### Guides
+- [Project Instructions](guides/project-instructions.md)
+- [Debug Usage](guides/debug-usage.md)
+
+### Reports & status notes
+- [Project Completion](reports/project-completion.md)
+- [Project Status](reports/project-status.md)
+- [Final Status](reports/final-status.md)
+- [Portability Fixes Applied](reports/portability-fixes-applied.md)
+- [Library Embedding Success](reports/library-embedding-success.md)
+- [Library Embedding Success Notes](reports/library-embedding-success-notes.md)
+- [CPU Architecture Compatibility](reports/cpu-architecture-compatibility.md)
+- [Docker Compatibility](reports/docker-compatibility.md)
+- [Runtime Analysis](reports/runtime-analysis.md)
 
 ## Quick Links
 
 - [Main README](../README.md)
-- [Project Instructions](../ProjectInstructions.md)
+- [Changelog](../CHANGELOG.md)
 - [Contributing Guide](../CONTRIBUTING.md)
 - [License](../LICENSE)
