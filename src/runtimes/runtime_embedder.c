@@ -899,6 +899,93 @@ static ub_result_t embed_tree_walk(const char* abs_path,
 }
 
 #ifndef PLATFORM_WINDOWS
+static int probe_script(const char* path, char* out, size_t out_cap) {
+    if (access(path, R_OK) != 0) return -1;
+    size_t n = strlen(path);
+    if (n >= out_cap) return -1;
+    memcpy(out, path, n + 1);
+    return 0;
+}
+
+int ub_find_vendor_script(char* out, size_t out_cap) {
+    if (!out || out_cap < 64) return -1;
+
+    /* 1. explicit env override */
+    const char* env = getenv("UBUILDER_VENDOR_SCRIPT");
+    if (env && *env) {
+        if (probe_script(env, out, out_cap) == 0) return 0;
+        /* explicit override that's invalid is a hard error to the caller */
+        return -1;
+    }
+
+    /* Resolve <exe-dir> from /proc/self/exe-style lookup. */
+    char exe[1024];
+    if (pc_executable_path(exe, sizeof(exe)) != 0) return -1;
+    char* last_slash = strrchr(exe, '/');
+    if (!last_slash) return -1;
+    *last_slash = 0;  /* exe is now the directory */
+
+    /* Probe well-known relative paths. */
+    const char* rels[] = {
+        "/../../scripts/vendor-runtimes.sh",
+        "/../scripts/vendor-runtimes.sh",
+        "/scripts/vendor-runtimes.sh",
+        "/../share/ubuilder/vendor-runtimes.sh",
+        NULL
+    };
+    char cand[2048];
+    for (int i = 0; rels[i]; i++) {
+        snprintf(cand, sizeof(cand), "%s%s", exe, rels[i]);
+        if (probe_script(cand, out, out_cap) == 0) return 0;
+    }
+    return -1;
+}
+
+ub_result_t ub_auto_vendor(const char* runtime_key) {
+    if (!runtime_key || !*runtime_key) return UB_ERROR_INVALID_ARGS;
+
+    char script[1024];
+    if (ub_find_vendor_script(script, sizeof(script)) != 0) {
+        fprintf(stderr,
+                "note: cannot auto-vendor — vendor-runtimes.sh not found.\n"
+                "      Set UBUILDER_VENDOR_SCRIPT=<path> or run the script manually.\n");
+        return UB_ERROR_RUNTIME_NOT_FOUND;
+    }
+
+    char* bash = pc_path_lookup("bash");
+    if (!bash) {
+        fprintf(stderr,
+                "note: cannot auto-vendor — bash not on PATH.\n"
+                "      Run %s manually, or install bash + curl + tar.\n", script);
+        return UB_ERROR_RUNTIME_NOT_FOUND;
+    }
+
+    printf("Auto-vendoring %s (one-time setup) ...\n", runtime_key);
+    printf("  script: %s\n", script);
+    fflush(stdout);   /* surface our header before the script's curl output. */
+    char* argv[] = { bash, script, (char*)runtime_key, NULL };
+    int rc = pc_spawn_and_wait(bash, argv, NULL, NULL);
+    free(bash);
+    if (rc != 0) {
+        fprintf(stderr,
+                "note: auto-vendor failed (exit %d). Check network access\n"
+                "      or run the script manually for a clearer error.\n", rc);
+        return UB_ERROR_EXECUTION_FAILED;
+    }
+    return UB_SUCCESS;
+}
+#else
+int ub_find_vendor_script(char* out, size_t out_cap) {
+    (void)out; (void)out_cap;
+    return -1;  /* Windows auto-vendor support deferred. */
+}
+ub_result_t ub_auto_vendor(const char* runtime_key) {
+    (void)runtime_key;
+    return UB_ERROR_RUNTIME_NOT_FOUND;
+}
+#endif
+
+#ifndef PLATFORM_WINDOWS
 int ub_runtime_cache_lookup(const char* cache_subdir,
                             const char* rel_exe,
                             char*       out,

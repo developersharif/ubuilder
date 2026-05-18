@@ -82,6 +82,10 @@ typedef struct {
      * etc.) into the embedded runtime. Default is auto-install when a
      * dependency manifest is present in the project directory. */
     int   no_install_deps;
+    /* DX (post-M8): when set, skip the "vendored runtime missing → auto-
+     * spawn vendor-runtimes.sh" path. Useful in CI where the cache is
+     * pre-populated and we want to fail loudly on a miss. */
+    int   no_auto_vendor;
 } ub_config_t;
 
 // Embedded resource structure

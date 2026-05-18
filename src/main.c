@@ -18,6 +18,7 @@ static struct option long_options[] = {
     {"runtime-source",    required_argument, 0,  2 },
     {"use-host-runtime",  no_argument,       0,  3 },
     {"no-install-deps",   no_argument,       0,  4 },
+    {"no-auto-vendor",    no_argument,       0,  5 },
     {"gui",               no_argument,       0, 'g'},
     {"verbose",     no_argument,       0, 'v'},
     {"help",        no_argument,       0, 'h'},
@@ -48,6 +49,8 @@ static void print_usage(const char* program_name) {
     printf("                            runtime. Default: when requirements.txt (Python) is\n");
     printf("                            present in the project, deps are pip-installed into a\n");
     printf("                            staged copy of the vendored runtime before bundling.\n");
+    printf("      --no-auto-vendor      Don't auto-spawn scripts/vendor-runtimes.sh when the\n");
+    printf("                            cache is empty. Default: vendor automatically on miss.\n");
     printf("  -g, --gui                 Enable GUI support\n");
     printf("  -v, --verbose             Enable verbose output\n");
     printf("  -h, --help                Show this help message\n");
@@ -128,6 +131,9 @@ static ub_result_t parse_arguments(int argc, char* argv[],
         } else if (strcmp(arg, "--no-install-deps") == 0) {
             config->no_install_deps = 1;
             presence->no_install_deps = 1;
+        } else if (strcmp(arg, "--no-auto-vendor") == 0) {
+            config->no_auto_vendor = 1;
+            presence->no_auto_vendor = 1;
         } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
             presence->gui = 1;
@@ -184,6 +190,10 @@ static ub_result_t parse_arguments(int argc, char* argv[],
             case 4: /* --no-install-deps */
                 config->no_install_deps = 1;
                 presence->no_install_deps = 1;
+                break;
+            case 5: /* --no-auto-vendor */
+                config->no_auto_vendor = 1;
+                presence->no_auto_vendor = 1;
                 break;
             case 'g':
                 config->enable_gui = 1;

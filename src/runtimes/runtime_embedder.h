@@ -73,6 +73,29 @@ int ub_runtime_cache_lookup(const char* cache_subdir,
                             char*       out,
                             size_t      out_cap);
 
+/*
+ * DX (post-M8): locate `scripts/vendor-runtimes.sh` relative to the current
+ * executable. Probe order:
+ *   1. $UBUILDER_VENDOR_SCRIPT  (explicit override)
+ *   2. <exe-dir>/../../scripts/vendor-runtimes.sh  (dev: build/src/ubuilder)
+ *   3. <exe-dir>/../scripts/vendor-runtimes.sh     (dev variant)
+ *   4. <exe-dir>/scripts/vendor-runtimes.sh        (binary alongside scripts/)
+ *   5. <exe-dir>/../share/ubuilder/vendor-runtimes.sh  (system install)
+ *
+ * Returns 0 and writes the absolute path on success, -1 if not found.
+ */
+int ub_find_vendor_script(char* out, size_t out_cap);
+
+/*
+ * Auto-vendor a missing runtime. Spawns `bash <script> <runtime_key>`.
+ * `runtime_key` is "python" / "node" matching the script's manifest.
+ * Returns UB_SUCCESS on success (cache should now contain the runtime),
+ * UB_ERROR_RUNTIME_NOT_FOUND if the script wasn't found or its dependencies
+ * (bash / curl / tar) are missing, UB_ERROR_EXECUTION_FAILED if it ran
+ * but exited non-zero.
+ */
+ub_result_t ub_auto_vendor(const char* runtime_key);
+
 // Function to extract PHP extensions and create custom php.ini
 ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir);
 

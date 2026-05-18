@@ -215,13 +215,19 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
         return UB_ERROR_INVALID_ARGS;
     }
 
-    /* DX: auto-discover a vendored Python in the cache unless the user
-     * explicitly opted into the host runtime (--use-host-runtime). */
+    /* DX: auto-discover a vendored Python in the cache. If missing and the
+     * user hasn't opted out (--no-auto-vendor / --use-host-runtime),
+     * auto-spawn scripts/vendor-runtimes.sh to fetch it on first use. */
     if (config && !config->use_host_runtime) {
         char cached[1024];
-        if (ub_runtime_cache_lookup("python", "bin/python3", cached, sizeof(cached)) == 0) {
+        int cache_hit = (ub_runtime_cache_lookup("python", "bin/python3", cached, sizeof(cached)) == 0);
+        if (!cache_hit && !config->no_auto_vendor) {
+            if (ub_auto_vendor("python") == UB_SUCCESS) {
+                cache_hit = (ub_runtime_cache_lookup("python", "bin/python3", cached, sizeof(cached)) == 0);
+            }
+        }
+        if (cache_hit) {
             printf("Embedding hermetic Python tree (auto-discovered): %s\n", cached);
-            printf("  (run `ubuilder --use-host-runtime …` to skip auto-discovery)\n");
             char* staged = NULL;
             ub_result_t rc = python_maybe_stage_with_deps(config, cached, &staged);
             if (rc != UB_SUCCESS) return rc;

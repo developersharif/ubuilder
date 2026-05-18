@@ -185,6 +185,21 @@ static void test_executable_path(void) {
            pc_executable_path(small, sizeof(small)) != 0);
 }
 
+static void test_find_vendor_script(void) {
+    char out[1024];
+    int rc = ub_find_vendor_script(out, sizeof(out));
+    /* The test binary lives at build/tests/test_ubuilder — relative path
+     * "../../scripts/vendor-runtimes.sh" must resolve from the exe dir. */
+    EXPECT("find_vendor_script: resolves the in-repo script",
+           rc == 0 && strstr(out, "scripts/vendor-runtimes.sh") != NULL);
+
+    /* Env override: missing file → -1 (refuse to fall through). */
+    setenv("UBUILDER_VENDOR_SCRIPT", "/no/such/script.sh", 1);
+    rc = ub_find_vendor_script(out, sizeof(out));
+    EXPECT("find_vendor_script: invalid env override returns -1", rc == -1);
+    unsetenv("UBUILDER_VENDOR_SCRIPT");
+}
+
 static void test_runtime_cache_lookup(void) {
     /* Build a synthetic cache layout and probe it via the env-var override. */
     char root[256];
@@ -240,4 +255,5 @@ void test_platform_compat(void) {
     test_temp_root();
     test_executable_path();
     test_runtime_cache_lookup();
+    test_find_vendor_script();
 }

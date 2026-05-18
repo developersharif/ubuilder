@@ -20,6 +20,7 @@ typedef struct {
     unsigned runtime_source    : 1;
     unsigned use_host_runtime  : 1;
     unsigned no_install_deps   : 1;
+    unsigned no_auto_vendor    : 1;
 } ub_cli_presence_t;
 
 typedef struct ub_config_file ub_config_file_t;

@@ -74,13 +74,18 @@ static ub_result_t nodejs_embed_runtime(const ub_config_t* config, FILE* output_
         return UB_ERROR_INVALID_ARGS;
     }
 
-    /* DX: auto-discover a vendored Node in the cache unless the user
-     * explicitly opted into the host runtime (--use-host-runtime). */
+    /* DX: auto-discover a vendored Node in the cache. If missing and the
+     * user hasn't opted out, auto-spawn vendor-runtimes.sh to fetch it. */
     if (config && !config->use_host_runtime) {
         char cached[1024];
-        if (ub_runtime_cache_lookup("node", "bin/node", cached, sizeof(cached)) == 0) {
+        int cache_hit = (ub_runtime_cache_lookup("node", "bin/node", cached, sizeof(cached)) == 0);
+        if (!cache_hit && !config->no_auto_vendor) {
+            if (ub_auto_vendor("node") == UB_SUCCESS) {
+                cache_hit = (ub_runtime_cache_lookup("node", "bin/node", cached, sizeof(cached)) == 0);
+            }
+        }
+        if (cache_hit) {
             printf("Embedding hermetic Node.js tree (auto-discovered): %s\n", cached);
-            printf("  (run `ubuilder --use-host-runtime …` to skip auto-discovery)\n");
             return ub_embed_runtime_tree(cached, output_file);
         }
     }
