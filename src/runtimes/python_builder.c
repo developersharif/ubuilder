@@ -378,9 +378,10 @@ static ub_result_t python_embed_files_recursive(const char* dir_path, const char
 }
 
 // Embed Python application
-static ub_result_t python_embed_application(const char* project_dir, FILE* output_file) {
+static ub_result_t python_embed_application(const ub_config_t* config, FILE* output_file) {
+    const char* project_dir = config->project_dir;
     struct stat st;
-    
+
     // Verify project directory exists
     if (stat(project_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
         return UB_ERROR_FILE_NOT_FOUND;

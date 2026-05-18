@@ -376,6 +376,73 @@ for rt in "${REQUESTED[@]}"; do
     fi
 done
 
+# M8-B (Node deps). Mirror of run_m8_deps_case but for Node + npm.
+# Build-time network required.
+run_m8b_deps_case() {
+    local hermetic_dir
+    hermetic_dir="$(find "$RUNTIMES_CACHE/node" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    log ""
+    log "── nodejs-with-deps (M8-B: npm install into staged project) ──"
+    if [[ -z "$hermetic_dir" || ! -x "$hermetic_dir/bin/node" ]]; then
+        warn "vendored Node missing; run scripts/vendor-runtimes.sh node first"
+        return 0
+    fi
+
+    local fdir="$FIXTURE_DIR/nodejs-with-deps"
+    local cw="$WORK_DIR/nodejs-with-deps"
+    mkdir -p "$cw/build" "$cw/run"
+    info "fixture: $fdir (package.json → picocolors@1.1.1)"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/build/app" \
+            >"$cw/build.log" 2>&1; then
+        fail "ubuilder build failed (see $cw/build.log)"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    ok "bundle built ($(du -h "$cw/build/app" | cut -f1))"
+
+    cp "$cw/build/app" "$cw/run/app"
+    chmod +x "$cw/run/app"
+
+    local fake_path; fake_path="$(mktemp -d)"
+    local exit_code=0
+    ( cd "$cw/run" && PATH="$fake_path" ./app "hello world" "it's" "ok" ) \
+        >"$cw/stdout.txt" 2>"$cw/stderr.txt" || exit_code=$?
+    rmdir "$fake_path"
+
+    local rc=0
+    if (( exit_code != 0 )); then
+        fail "exit $exit_code (expected 0)"
+        sed 's/^/    [stderr] /' "$cw/stderr.txt" | tail -n 10
+        rc=1
+    fi
+    if ! diff -u "$fdir/expected.txt" "$cw/stdout.txt" >"$cw/stdout.diff" 2>&1; then
+        fail "stdout differs"
+        sed 's/^/    /' "$cw/stdout.diff" | head -n 30
+        rc=1
+    fi
+
+    # Assert the user's project dir was NOT mutated (no node_modules/ left behind).
+    if [[ -d "$fdir/node_modules" ]]; then
+        fail "user project was polluted: $fdir/node_modules exists — staging did not isolate"
+        rc=1
+    fi
+
+    if (( rc == 0 )); then
+        ok "bundle imports picocolors (installed at build), runs PATH-stripped, user project untouched"
+    fi
+    return $rc
+}
+
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "nodejs" ]]; then
+        run_m8b_deps_case || ((failures++))
+        break
+    fi
+done
+
 log ""
 if (( failures == 0 )); then
     log "${C_GRN}all bundle tests passed${C_RST}"

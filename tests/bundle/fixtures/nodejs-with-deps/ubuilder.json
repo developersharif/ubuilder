@@ -1,0 +1,5 @@
+{
+  "name": "nodejs-with-deps-fixture",
+  "runtime": "node",
+  "entry_point": "main.js"
+}

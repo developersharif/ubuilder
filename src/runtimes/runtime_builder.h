@@ -21,7 +21,11 @@ typedef struct {
      * config; the parameter is now mandatory but unused by PHP/Node until
      * their hermetic paths land (M1-D / M1-E). */
     ub_result_t (*embed_runtime)(const ub_config_t* config, FILE* output_file);
-    ub_result_t (*embed_application)(const char* project_dir, FILE* output_file);
+    /* M8: embed_application also receives config so Node (and later
+     * PHP / others) can stage the project + run `npm install` before
+     * walking the project files. Python ignores config and uses
+     * config->project_dir directly. */
+    ub_result_t (*embed_application)(const ub_config_t* config, FILE* output_file);
     ub_result_t (*generate_launcher)(FILE* output_file);
     
     // Runtime information

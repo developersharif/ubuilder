@@ -628,7 +628,7 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
     }
     
     // 4. Embed application using runtime-specific method
-    result = builder->embed_application(config->project_dir, output_file);
+    result = builder->embed_application(config, output_file);
     if (result != UB_SUCCESS) {
         fclose(output_file);
         fprintf(stderr, "Error: Failed to embed application for %s runtime\n", builder->name);

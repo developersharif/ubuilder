@@ -1,6 +1,6 @@
 # M8 — User Dependency Installation
 
-**Status:** ✅ Python end-to-end (M8-A). Node `package.json` (M8-B) and PHP `composer.json` (M8-C) deferred.
+**Status:** ✅ Python (M8-A) + Node (M8-B) end-to-end. PHP `composer.json` (M8-C) waits on M1-D's static-PHP source.
 **Companion to:** `M1_HERMETIC_INTERPRETERS.md` (M8 builds on M1's vendored runtimes).
 **Goal:** real-world apps with `numpy` / `requests` / `attrs` etc. produce a hermetic bundle that imports those packages — without polluting the shared runtime cache.
 
@@ -58,7 +58,7 @@ If staging ever silently writes to the shared cache, assertion #4 fails loudly.
 |---|---|---|
 | Pure-Python wheels (`attrs`, `requests`, ...) | ✅ works | Tested with `attrs==23.2.0`. |
 | Compiled wheels (`numpy`, `pillow`, ...) | ✅ should work | pip downloads `manylinux2014` wheels by default; staging interpreter matches Python 3.12 ABI. Not yet tested in CI. |
-| Node `package.json` (M8-B) | deferred | Same shape: stage the Node tree, run `npm ci --omit=dev --prefix <stage>` ... no, npm installs to `node_modules` relative to cwd. Easiest path: stage, then `cd <stage>` and `npm ci`. |
+| Node `package.json` (M8-B) | ✅ done | Stages the **project** (not the runtime) via `pc_copy_or_link_tree`, runs `<vendored>/bin/node <vendored>/lib/node_modules/npm/bin/npm-cli.js install --omit=dev --no-audit --no-fund --no-progress` with cwd=staged-project. Embeds the staged project (now containing `node_modules/`). Cleans up. **User's project tree stays untouched** — the harness asserts no `node_modules/` is left behind in the fixture. |
 | PHP `composer.json` (M8-C) | deferred | Waits for upstream hermetic PHP (M1-D blocker). |
 | Lock file (`requirements.lock`) | deferred | Today's bundle reproducibility = `requirements.txt` content + the vendored interpreter hash. A real lockfile would freeze transitive deps too. |
 | Content-addressed install cache | deferred | First M8 build is slow (pip download). Future: cache `<dep-set-hash> → installed site-packages` so repeat builds skip pip. |
@@ -68,8 +68,17 @@ If staging ever silently writes to the shared cache, assertion #4 fails loudly.
 
 | Surface | Effect |
 |---|---|
-| `--no-install-deps` CLI flag | Skip the staging+install step even if `requirements.txt` is present. |
-| `runtime_options.python.no_install_deps: true` in `ubuilder.json` | Same, but checked in with the project. |
-| `requirements.txt` absent | Stage step is skipped automatically (no overhead). |
+| `--no-install-deps` CLI flag | Skip the staging+install step even if a manifest is present. |
+| `runtime_options.<rt>.no_install_deps: true` in `ubuilder.json` | Same, but checked in with the project. |
+| Manifest absent (`requirements.txt` / `package.json`) | Stage step is skipped automatically (no overhead). |
 
-CLI flag takes precedence over the config file (same model as every other M1/M8 field).
+CLI flag takes precedence over the config file.
+
+## Per-runtime mechanics
+
+| Runtime | Manifest | What gets staged | Install command |
+|---|---|---|---|
+| Python | `requirements.txt` | The **vendored runtime** (`~/.cache/ubuilder/runtimes/python/<ver>/`) → `~/.cache/ubuilder/stage/build-<pid>/` | `<stage>/bin/python3 -m pip install --target=<stage>/lib/python3.X/site-packages -r <project>/requirements.txt` |
+| Node   | `package.json`   | The **project directory** (containing main.js + package.json) → `~/.cache/ubuilder/stage/node-build-<pid>/` | `<vendored>/bin/node <vendored>/lib/node_modules/npm/bin/npm-cli.js install --omit=dev` (cwd=staged-project) |
+
+Why the asymmetry: Python deps go into `<runtime>/lib/python3.X/site-packages/` (the embedded interpreter's stdlib path), so staging happens on the runtime. Node deps go into `<project>/node_modules/` (resolved relative to the script), so staging happens on the project.

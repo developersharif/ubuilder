@@ -1,5 +1,6 @@
 #include "runtime_builder.h"
 #include "runtime_embedder.h"
+#include "../core/platform_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -195,9 +196,12 @@ static ub_result_t nodejs_embed_files_recursive(const char* dir_path, const char
             // Recursively process subdirectory
             nodejs_embed_files_recursive(full_path, base_path, output_file);
         } else if (S_ISREG(st.st_mode)) {
-            // Check if it's a Node.js file or other relevant file
-            const char* ext = strrchr(entry->d_name, '.');
-            if (ext && (strcmp(ext, ".js") == 0 || strcmp(ext, ".json") == 0 || strcmp(ext, ".txt") == 0)) {
+            /* M8-B: drop the .js/.json/.txt extension filter. npm packages
+             * ship .cjs/.mjs/.d.ts/LICENSE/README/etc., and the bundle
+             * needs all of it to run correctly. Skip dotfiles to keep
+             * .git/.npm-cache out of the bundle. */
+            if (entry->d_name[0] == '.') { continue; }
+            {
                 // Calculate relative path from project root
                 const char* rel_path = full_path + strlen(base_path);
                 if (*rel_path == '/') rel_path++; // Skip leading slash
@@ -242,29 +246,142 @@ static ub_result_t nodejs_embed_files_recursive(const char* dir_path, const char
     return UB_SUCCESS;
 }
 
-// Embed Node.js application
-static ub_result_t nodejs_embed_application(const char* project_dir, FILE* output_file) {
+#ifndef PLATFORM_WINDOWS
+/* M8-B: find the vendored Node runtime so we can spawn its `npm` against
+ * a staged project. Mirrors the Python staging discovery — prefers
+ * config->runtime_source, falls back to cache auto-discovery, else NULL. */
+static int nodejs_locate_runtime(const ub_config_t* config, char* out, size_t out_cap) {
+    if (config && config->runtime_source) {
+        struct stat st;
+        if (stat(config->runtime_source, &st) == 0 && S_ISDIR(st.st_mode)) {
+            size_t n = strlen(config->runtime_source);
+            if (n >= out_cap) return -1;
+            memcpy(out, config->runtime_source, n + 1);
+            return 0;
+        }
+    }
+    if (config && !config->use_host_runtime) {
+        return ub_runtime_cache_lookup("node", "bin/node", out, out_cap);
+    }
+    return -1;
+}
+
+/* M8-B: install user's package.json deps into a staged copy of the
+ * project directory so `node_modules/` ships in the bundle without
+ * mutating the user's source tree.
+ *
+ * Returns UB_SUCCESS with *out_staged set to the staged project dir on
+ * success. *out_staged is NULL (no staging needed) when:
+ *   - --no-install-deps is set
+ *   - package.json is absent in project_dir
+ *   - no vendored Node runtime is reachable (host mode — caller embeds
+ *     the project as-is; the user is responsible for npm install)
+ */
+static ub_result_t nodejs_maybe_stage_project_with_deps(const ub_config_t* config,
+                                                       char** out_staged) {
+    *out_staged = NULL;
+    if (!config || config->no_install_deps) return UB_SUCCESS;
+
+    char pkg_path[1024];
+    snprintf(pkg_path, sizeof(pkg_path), "%s/package.json", config->project_dir);
     struct stat st;
-    
-    // Verify project directory exists
-    if (stat(project_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    if (stat(pkg_path, &st) != 0 || !S_ISREG(st.st_mode)) return UB_SUCCESS;
+
+    char node_root[1024];
+    if (nodejs_locate_runtime(config, node_root, sizeof(node_root)) != 0) {
+        printf("note: package.json found but no vendored Node runtime is reachable;\n"
+               "      bundling project as-is. `npm install --omit=dev` yourself, or run\n"
+               "      `scripts/vendor-runtimes.sh node` to enable hermetic install.\n");
+        return UB_SUCCESS;
+    }
+
+    const char* xdg = getenv("XDG_CACHE_HOME");
+    const char* home = getenv("HOME");
+    char stage[1024];
+    if (xdg && *xdg)        snprintf(stage, sizeof(stage), "%s/ubuilder/stage/node-build-%d",        xdg,  (int)getpid());
+    else if (home && *home) snprintf(stage, sizeof(stage), "%s/.cache/ubuilder/stage/node-build-%d", home, (int)getpid());
+    else                    snprintf(stage, sizeof(stage), "/tmp/ubuilder-node-stage-%d",                  (int)getpid());
+
+    pc_remove_tree(stage);
+
+    printf("Staging Node.js project for dependency install:\n");
+    printf("  source: %s\n", config->project_dir);
+    printf("  stage:  %s\n", stage);
+    if (pc_copy_or_link_tree(config->project_dir, stage) != 0) {
+        fprintf(stderr, "Error: failed to stage project at %s\n", stage);
+        pc_remove_tree(stage);
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+
+    /* Spawn `<node_root>/bin/node <node_root>/lib/node_modules/npm/bin/npm-cli.js
+     * install --omit=dev` with cwd=<stage>. Calling npm-cli.js directly via the
+     * vendored node avoids depending on a `node` interpreter being able to find
+     * `npm` on PATH or via the shell wrapper. */
+    char node_exe[1024];
+    snprintf(node_exe, sizeof(node_exe), "%s/bin/node", node_root);
+    char npm_cli[1024];
+    snprintf(npm_cli, sizeof(npm_cli), "%s/lib/node_modules/npm/bin/npm-cli.js", node_root);
+    if (access(node_exe, X_OK) != 0 || access(npm_cli, R_OK) != 0) {
+        fprintf(stderr, "Error: vendored Node missing bin/node or npm-cli.js at %s\n", node_root);
+        pc_remove_tree(stage);
         return UB_ERROR_FILE_NOT_FOUND;
     }
-    
-    // Write number of files marker (we'll update this later if needed)
+    printf("Installing dependencies from %s into staged project\n", pkg_path);
+    printf("  node: %s\n  npm:  %s\n", node_exe, npm_cli);
+
+    char* argv[] = {
+        node_exe,
+        npm_cli,
+        (char*)"install",
+        (char*)"--omit=dev",
+        (char*)"--no-audit",
+        (char*)"--no-fund",
+        (char*)"--no-progress",
+        NULL
+    };
+    int rc = pc_spawn_and_wait(node_exe, argv, NULL, stage);
+    if (rc != 0) {
+        fprintf(stderr, "Error: npm install failed (exit %d). Bundle build aborted.\n", rc);
+        pc_remove_tree(stage);
+        return UB_ERROR_EXECUTION_FAILED;
+    }
+
+    *out_staged = strdup(stage);
+    return UB_SUCCESS;
+}
+#endif
+
+// Embed Node.js application
+static ub_result_t nodejs_embed_application(const ub_config_t* config, FILE* output_file) {
+    struct stat st;
+
+#ifndef PLATFORM_WINDOWS
+    char* staged_project = NULL;
+    ub_result_t srcrc = nodejs_maybe_stage_project_with_deps(config, &staged_project);
+    if (srcrc != UB_SUCCESS) return srcrc;
+    const char* project_dir = staged_project ? staged_project : config->project_dir;
+#else
+    const char* project_dir = config->project_dir;
+#endif
+
+    if (stat(project_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+#ifndef PLATFORM_WINDOWS
+        if (staged_project) { pc_remove_tree(staged_project); free(staged_project); }
+#endif
+        return UB_ERROR_FILE_NOT_FOUND;
+    }
+
     uint32_t file_count_placeholder = 0;
-    (void)file_count_placeholder; // Suppress unused warning
-    long file_count_pos = ftell(output_file);
-    (void)file_count_pos; // Suppress unused warning
     fwrite(&file_count_placeholder, sizeof(file_count_placeholder), 1, output_file);
-    
-    // Embed all Node.js and related files recursively
+
     ub_result_t result = nodejs_embed_files_recursive(project_dir, project_dir, output_file);
-    
-    // Write end marker to indicate no more files
+
     uint32_t end_marker = 0;
     fwrite(&end_marker, sizeof(end_marker), 1, output_file);
-    
+
+#ifndef PLATFORM_WINDOWS
+    if (staged_project) { pc_remove_tree(staged_project); free(staged_project); }
+#endif
     return result;
 }
 
