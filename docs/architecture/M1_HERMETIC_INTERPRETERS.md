@@ -18,15 +18,16 @@ We do **not** build interpreters from source ourselves in this repo — that's a
 
 ## Configuration surface
 
-Five ways the build can be told which runtime to embed, in precedence order:
+Six ways the build can be told which runtime to embed, in precedence order:
 
-1. **`--use-host-runtime` flag** — explicit opt-in to today's pre-M1 behavior (host's `/usr/bin/python3`, bundle is **not portable**). Useful for fast local dev iteration. Skips cache auto-discovery entirely. Prints a "non-portable" note.
+1. **`--use-host-runtime` flag** — explicit opt-in to today's pre-M1 behavior (host's `/usr/bin/python3`, bundle is **not portable**). Useful for fast local dev iteration. Skips cache auto-discovery and auto-vendor entirely. Prints a "non-portable" note.
 2. **CLI `--runtime-source <path>`** — explicit override. Path may be a directory (vendored tree) or a single file (user-chosen binary).
 3. **Config file** `runtime_options.<rt>.source: "/path"` — same as #2 but checked in with the project.
-4. **Cache auto-discovery (default for great DX)** — UBuilder looks at `$UBUILDER_RUNTIMES_CACHE/<rt>/<version>/` (default `$XDG_CACHE_HOME/ubuilder/runtimes/<rt>/`, falling back to `~/.cache/ubuilder/runtimes/<rt>/`). It picks the lexicographically-highest subdirectory that contains the expected executable (`bin/python3`, `bin/node`). `python-build-standalone` and `nodejs.org` both use sortable version strings, so "lex max" = "newest".
-5. **Host fallback** — only if #1–#4 produce nothing. Prints a note pointing at `scripts/vendor-runtimes.sh`.
+4. **Cache auto-discovery** — UBuilder looks at `$UBUILDER_RUNTIMES_CACHE/<rt>/<version>/` (default `$XDG_CACHE_HOME/ubuilder/runtimes/<rt>/`, falling back to `~/.cache/ubuilder/runtimes/<rt>/`). It picks the lexicographically-highest subdirectory that contains the expected executable.
+5. **Auto-vendor (best DX default)** — if the cache is empty and `--no-auto-vendor` is not set, UBuilder locates `scripts/vendor-runtimes.sh` (env override `$UBUILDER_VENDOR_SCRIPT`, then probed relative to its own binary), spawns it via `pc_spawn_and_wait bash <script> <rt>`, then re-checks the cache. The script downloads the upstream tarball (SHA-256-verified) and extracts to the cache. First build for a runtime takes ~30 s; subsequent builds are instant.
+6. **Host fallback** — only if #1–#5 produce nothing (no network / no bash / opt-out). Prints a note explaining the fallback.
 
-**Great DX upshot:** once a user runs `scripts/vendor-runtimes.sh python node` once, every subsequent `ubuilder` build with no flags produces hermetic bundles. To opt out of the new default and use the host runtime: pass `--use-host-runtime` or set `runtime_options.<rt>.use_host: true` in `ubuilder.json`.
+**Great DX upshot:** on a fresh machine, `cd my-app && ubuilder` produces a hermetic bundle. No `vendor-runtimes.sh` invocation, no flags, no manual paths. Auto-vendor is the default; pass `--no-auto-vendor` (or set the config key) to suppress it in CI environments where the cache should be pre-populated.
 
 ## Vendoring
 
