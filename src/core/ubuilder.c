@@ -34,14 +34,7 @@ static ub_result_t copy_executable_template(const char* output_path);
 static ub_result_t embed_project_files(const ub_config_t* config);
 static ub_result_t embed_directory_recursive(const char* dir_path, FILE* output_file);
 static ub_result_t create_modular_executable(const ub_config_t* config);
-static ub_result_t ub_execute_embedded_app(ub_runtime_type_t runtime, const char* script_content, 
-                                          const char* entry_point, int argc, char* argv[]);
-static int ub_execute_script(ub_runtime_type_t runtime, const char* script_path, int argc, char* argv[]);
 static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* data_file, int argc, char* argv[]);
-static ub_result_t ub_run_legacy_embedded_app(FILE* data_file, int argc, char* argv[]);
-static ub_result_t ub_execute_embedded_app(ub_runtime_type_t runtime, const char* script_content, 
-                                          const char* entry_point, int argc, char* argv[]);
-static int ub_execute_script(ub_runtime_type_t runtime, const char* script_path, int argc, char* argv[]);
 
 // Global state
 static int g_initialized = 0;
@@ -278,7 +271,6 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
     }
     
     FILE* self_file;
-    char old_marker[] = "UBUILDER_DATA_MARKER";
     char modular_marker[] = "UBUILDER_MODULAR_V3_B64F7E2A_MARKER";  // More unique marker
     ub_runtime_type_t runtime;
     ub_result_t result = UB_ERROR_RUNTIME_NOT_FOUND;
@@ -373,18 +365,9 @@ ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
         }
     }
     
-    // If modular marker not found, try old format in the search buffer
-    for (size_t i = 0; i <= bytes_read - strlen(old_marker); i++) {
-        if (memcmp(search_buffer + i, old_marker, strlen(old_marker)) == 0) {
-            // Found old marker, set file position after marker
-            fseek(self_file, search_start + i + strlen(old_marker), SEEK_SET);
-            result = ub_run_legacy_embedded_app(self_file, argc, argv);
-            free(search_buffer);
-            fclose(self_file);
-            return result;
-        }
-    }
-    
+    /* Legacy v2 (UBUILDER_DATA_MARKER) format intentionally not supported here.
+     * It used a host-runtime fallback (system("python3 ..."), etc.) which
+     * silently masked extraction failures. Modular V3 is the only honest path. */
     free(search_buffer);
     
     fclose(self_file);
@@ -409,129 +392,15 @@ static const char* get_temp_dir(void) {
     return temp_dir;
 }
 
-static ub_result_t ub_execute_embedded_app(ub_runtime_type_t runtime, const char* script_content, 
-                                          const char* entry_point, int argc, char* argv[]) {
-    char temp_dir[512];
-    char script_path[1024];
-    const char* extension;
-    FILE* script_file;
-    int exit_code;
-    
-    // Create temporary directory
-    const char* base_temp_dir = get_temp_dir();
-#ifdef PLATFORM_WINDOWS
-    snprintf(temp_dir, sizeof(temp_dir), "%s\\ubuilder-%d", base_temp_dir, getpid());
-#else
-    snprintf(temp_dir, sizeof(temp_dir), "%s/ubuilder-%d", base_temp_dir, getpid());
-#endif
-    if (mkdir(temp_dir, 0755) != 0 && errno != EEXIST) {
-        return UB_ERROR_EXTRACTION_FAILED;
-    }
-    
-    // Determine file extension based on runtime
-    switch (runtime) {
-        case UB_RUNTIME_PYTHON:
-            extension = ".py";
-            break;
-        case UB_RUNTIME_PHP:
-            extension = ".php";
-            break;
-        case UB_RUNTIME_NODEJS:
-            extension = ".js";
-            break;
-        default:
-            return UB_ERROR_RUNTIME_NOT_FOUND;
-    }
-    
-    // Write script to temporary file
-    if (entry_point) {
-        snprintf(script_path, sizeof(script_path), "%s/%s", temp_dir, entry_point);
-    } else {
-        snprintf(script_path, sizeof(script_path), "%s/main%s", temp_dir, extension);
-    }
-    
-    script_file = fopen(script_path, "w");
-    if (!script_file) {
-        return UB_ERROR_EXTRACTION_FAILED;
-    }
-    
-    fwrite(script_content, 1, strlen(script_content), script_file);
-    fclose(script_file);
-    
-    // Execute the script
-    exit_code = ub_execute_script(runtime, script_path, argc, argv);
-    
-    // Cleanup
-    unlink(script_path);
-    rmdir(temp_dir);
-    
-    return (exit_code == 0) ? UB_SUCCESS : UB_ERROR_EXECUTION_FAILED;
-}
-
-// Function to execute script with appropriate runtime
-static int ub_execute_script(ub_runtime_type_t runtime, const char* script_path, int argc, char* argv[]) {
-    char command[2048];
-    char args_str[1024] = "";
-    char script_dir[1024];
-    char script_name[256];
-    char original_dir[1024];
-    
-    // Save current working directory
-    if (getcwd(original_dir, sizeof(original_dir)) == NULL) {
-        return -1;
-    }
-    
-    // Extract directory and filename from script path
-    strcpy(script_dir, script_path);
-    char* last_slash = strrchr(script_dir, '/');
-    if (last_slash) {
-        *last_slash = '\0';
-        strcpy(script_name, last_slash + 1);
-        
-        // Change to script directory
-        if (chdir(script_dir) != 0) {
-            return -1;
-        }
-    } else {
-        // Script is in current directory, no need to change directory
-        strcpy(script_name, script_path);
-        // Don't change directory in this case
-    }
-    
-    // Build argument string
-    for (int i = 1; i < argc; i++) {
-        strncat(args_str, " ", sizeof(args_str) - strlen(args_str) - 1);
-        strncat(args_str, argv[i], sizeof(args_str) - strlen(args_str) - 1);
-    }
-    
-    // Build execution command based on runtime
-    switch (runtime) {
-        case UB_RUNTIME_PYTHON:
-            snprintf(command, sizeof(command), "python3 \"%s\"%s", script_name, args_str);
-            break;
-        case UB_RUNTIME_PHP:
-            snprintf(command, sizeof(command), "php \"%s\"%s", script_name, args_str);
-            break;
-        case UB_RUNTIME_NODEJS:
-            snprintf(command, sizeof(command), "node \"%s\"%s", script_name, args_str);
-            break;
-        default:
-            // Restore original directory before returning
-            if (chdir(original_dir) != 0) {
-                fprintf(stderr, "Warning: Failed to restore original directory\n");
-            }
-            return -1;
-    }
-    
-    int result = system(command);
-    
-    // Restore original working directory
-    if (chdir(original_dir) != 0) {
-        fprintf(stderr, "Warning: Failed to restore original directory\n");
-    }
-    
-    return result;
-}
+/* S2 (audit): removed `ub_execute_embedded_app` and `ub_execute_script`.
+ * Both were unconditional fallbacks to host runtimes via
+ *   system("python3 ..."), system("php ..."), system("node ...")
+ * which silently masked extraction failures on hosts that happened to have
+ * the interpreter installed. The modular bundle path
+ * (ub_run_modular_embedded_app -> ub_execute_script_with_embedded_runtime)
+ * is the only execution path now; missing or broken embedded runtimes fail
+ * with UB_ERROR_EXTRACTION_FAILED / UB_ERROR_EXECUTION_FAILED instead.
+ * See docs/architecture/ARCHITECTURE_AUDIT.md §3 G3 and §4.1 S2. */
 
 // Function to execute script with embedded runtime binary
 static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime, const char* runtime_binary_path, 
@@ -1118,66 +987,7 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     return (exit_code == 0) ? UB_SUCCESS : UB_ERROR_EXECUTION_FAILED;
 }
 
-// Function to run legacy embedded application (Phase 2 format)
-static ub_result_t ub_run_legacy_embedded_app(FILE* data_file, int argc, char* argv[]) {
-    ub_runtime_type_t runtime;
-    uint32_t entry_len;
-    char* entry_point = NULL;
-    uint32_t file_size;
-    char* script_content = NULL;
-    ub_result_t result;
-    
-    // Read runtime type
-    if (fread(&runtime, sizeof(runtime), 1, data_file) != 1) {
-        return UB_ERROR_EXTRACTION_FAILED;
-    }
-    
-    // Read entry point
-    if (fread(&entry_len, sizeof(entry_len), 1, data_file) != 1) {
-        return UB_ERROR_EXTRACTION_FAILED;
-    }
-    
-    if (entry_len > 0) {
-        entry_point = malloc(entry_len + 1);
-        if (!entry_point) {
-            return UB_ERROR_MEMORY_ALLOCATION;
-        }
-        
-        if (fread(entry_point, 1, entry_len, data_file) != entry_len) {
-            free(entry_point);
-            return UB_ERROR_EXTRACTION_FAILED;
-        }
-        entry_point[entry_len] = '\0';
-    }
-    
-    // Read script content
-    if (fread(&file_size, sizeof(file_size), 1, data_file) != 1) {
-        free(entry_point);
-        return UB_ERROR_EXTRACTION_FAILED;
-    }
-    
-    if (file_size > 0) {
-        script_content = malloc(file_size + 1);
-        if (!script_content) {
-            free(entry_point);
-            return UB_ERROR_MEMORY_ALLOCATION;
-        }
-        
-        if (fread(script_content, 1, file_size, data_file) != file_size) {
-            free(script_content);
-            free(entry_point);
-            return UB_ERROR_EXTRACTION_FAILED;
-        }
-        script_content[file_size] = '\0';
-        
-        // Execute the embedded application
-        result = ub_execute_embedded_app(runtime, script_content, entry_point, argc, argv);
-        
-        free(script_content);
-    } else {
-        result = UB_ERROR_FILE_NOT_FOUND;
-    }
-    
-    free(entry_point);
-    return result;
-}
+/* S2 (audit): removed `ub_run_legacy_embedded_app`. It was the only reader
+ * of the v2 (UBUILDER_DATA_MARKER) format, which embedded just the user's
+ * script bytes and relied on a host interpreter via system(). Modern bundles
+ * use the modular V3 format with embedded interpreter binaries. */

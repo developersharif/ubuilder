@@ -79,7 +79,7 @@ Numbered so we can reference them later.
 
 **G2. Interpreter stdlib is not embedded on Unix.** Python without `Lib/`, PHP without its extension `.so`s, Node without its `node_modules` resolver wired correctly — none of these are real "interpreters." Only the executable byte is embedded on Linux/macOS.
 
-**G3. `system()` and `/bin/sh` dependence.** The runtime path shells out for every invocation (`ubuilder.c:526, 653, 655`). This adds a hard dependency on `/bin/sh` and on shell-quoting being safe. It also makes `argv` pass-through wrong: every arg is re-quoted into a single buffer with a 1024-byte cap (`ubuilder.c:534-537`), which both truncates and breaks args with embedded spaces or quotes.
+**G3. `system()` and `/bin/sh` dependence.** The runtime path still shells out for embedded-runtime invocation (the two remaining `system()` call sites in `ub_execute_script_with_embedded_runtime`). This adds a hard dependency on `/bin/sh` and on shell-quoting being safe. It also makes `argv` pass-through wrong: every arg is re-quoted into a single buffer with a 1024-byte cap, which both truncates and breaks args with embedded spaces or quotes. (S2 removed the *silent host-runtime fallback* — the secret `system("python3 …")` path that masked extraction failures — but the embedded-runtime call sites still use `system()`; S1 replaces them with `posix_spawnp` / `CreateProcessW`.)
 
 **G4. No statically linked launcher.** The CLI itself is dynamically linked. Even if the interpreter were hermetic, the launcher's own glibc/libpthread/libdl deps still need to match the target.
 
@@ -112,7 +112,7 @@ Numbered so we can reference them later.
 | Action | Reason | Touch points |
 |---|---|---|
 | **S1. Replace `system()` with `posix_spawnp` / `posix_spawn` + `argv` array on Unix, `CreateProcessW` on Windows.** | Removes `/bin/sh` dependency (G3), fixes argv quoting (G7), enables proper exit-code propagation. | `src/core/ubuilder.c:526,653,655` |
-| **S2. Delete the silent host-runtime fallback in `ub_execute_script()`.** | Eliminates the "secretly using host interpreter" footgun (G3); failures should be loud. | `src/core/ubuilder.c:508-516` |
+| **S2. Delete the silent host-runtime fallback in `ub_execute_script()`.** ✅ done. | Eliminates the "secretly using host interpreter" footgun (G3); failures should be loud. Removed `ub_execute_script`, `ub_execute_embedded_app`, `ub_run_legacy_embedded_app`, and the legacy v2-marker scan in `ub_check_and_run_embedded_app`. Modern modular bundles are the only execution path; missing/broken embedded runtimes now surface as `UB_ERROR_EXTRACTION_FAILED` / `UB_ERROR_EXECUTION_FAILED` instead of being papered over by `system("python3 ...")`. | `src/core/ubuilder.c` |
 | **S3. Add SHA-256 over the payload, written into the trailer; verify on launch.** | G8. Bundles become tamper-evident; truncated downloads fail fast. | `src/core/ubuilder.c:894-907`, new `src/core/crypto.{c,h}` (use `picosha2` or a 200-line public-domain SHA256). |
 | **S4. Populate `src/core/platform_compat.{c,h}` with: `pc_spawn`, `pc_temp_dir`, `pc_mkdir_p`, `pc_remove_tree`, `pc_realpath`, `pc_executable_path`.** | Collapses dozens of `#ifdef PLATFORM_WINDOWS` blocks (G6). | New file + ripple through `ubuilder.c`, `runtime_embedder.c`. |
 | **S5. Remove `popen("php-config --extension-dir")`; require an explicit `--php-runtime-dir` flag.** | Non-hermetic build (G10); breaks reproducibility. | `src/runtimes/php_builder.c:444` |
