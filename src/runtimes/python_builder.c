@@ -43,57 +43,120 @@ static ub_result_t python_embed_windows_runtime(const char* python_dir, FILE* ou
 static void python_embed_directory_recursive(const char* dir_path, const char* base_python_dir, FILE* output_file, size_t* total_size, int* files_embedded);
 #endif
 
-// Embed Python runtime
-static ub_result_t python_embed_runtime(FILE* output_file) {
-    ub_runtime_info_t runtime_info;
+/* M1: Embed Python runtime.
+ *
+ * Three modes, in precedence:
+ *   1. config->runtime_source is a directory  → tree embed (hermetic).
+ *   2. config->runtime_source is a file       → single-binary tree (one
+ *      record at bin/python3), with explicit user-chosen interpreter.
+ *   3. config->runtime_source is NULL         → fall back to host probe
+ *      and embed the host's /usr/bin/python3 as a 1-record tree. Print a
+ *      "non-hermetic" hint pointing at scripts/vendor-runtimes.sh so the
+ *      next build can be portable.
+ *
+ * On POSIX every path produces a V5 tree-format payload (uniform launcher
+ * extraction). On Windows we still defer to the legacy multi-file embed.
+ */
+#ifndef PLATFORM_WINDOWS
+static ub_result_t python_embed_single_as_tree(const char* binary_path, FILE* out) {
+    /* One-record tree with the host binary at "bin/python3". Format matches
+     * ub_embed_runtime_tree: [magic] [records...] [u16=0 sentinel]. */
+    uint32_t magic = UB_RUNTIME_TREE_MAGIC;
+    if (fwrite(&magic, sizeof(magic), 1, out) != 1) return UB_ERROR_EXTRACTION_FAILED;
+
+    const char* rel  = "bin/python3";
+    uint16_t plen    = (uint16_t)strlen(rel);
+    uint32_t mode    = 0755;
+    struct stat st;
+    if (stat(binary_path, &st) != 0) return UB_ERROR_FILE_NOT_FOUND;
+    uint64_t size64  = (uint64_t)st.st_size;
+
+    if (fwrite(&plen, sizeof(plen), 1, out) != 1)     return UB_ERROR_EXTRACTION_FAILED;
+    if (fwrite(rel,   1, plen, out)         != plen)  return UB_ERROR_EXTRACTION_FAILED;
+    if (fwrite(&mode, sizeof(mode), 1, out) != 1)     return UB_ERROR_EXTRACTION_FAILED;
+    if (fwrite(&size64, sizeof(size64), 1, out) != 1) return UB_ERROR_EXTRACTION_FAILED;
+
+    FILE* in = fopen(binary_path, "rb");
+    if (!in) return UB_ERROR_FILE_NOT_FOUND;
+    char buf[65536];
+    uint64_t remaining = size64;
+    while (remaining > 0) {
+        size_t want = (remaining > sizeof(buf)) ? sizeof(buf) : (size_t)remaining;
+        size_t got  = fread(buf, 1, want, in);
+        if (got == 0) { fclose(in); return UB_ERROR_EXTRACTION_FAILED; }
+        if (fwrite(buf, 1, got, out) != got) { fclose(in); return UB_ERROR_EXTRACTION_FAILED; }
+        remaining -= got;
+    }
+    fclose(in);
+
+    /* Sentinel: u16=0 path_len marks end of tree. */
+    uint16_t sentinel = 0;
+    if (fwrite(&sentinel, sizeof(sentinel), 1, out) != 1) return UB_ERROR_EXTRACTION_FAILED;
+    return UB_SUCCESS;
+}
+#endif
+
+static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_file) {
     ub_result_t result;
-    
-    // Detect Python binary on system
+
+#ifndef PLATFORM_WINDOWS
+    /* M1: hermetic mode if --runtime-source points at a directory. */
+    if (config && config->runtime_source) {
+        struct stat st;
+        if (stat(config->runtime_source, &st) != 0) {
+            fprintf(stderr, "Error: --runtime-source not found: %s\n", config->runtime_source);
+            return UB_ERROR_FILE_NOT_FOUND;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            printf("Embedding hermetic Python tree: %s\n", config->runtime_source);
+            return ub_embed_runtime_tree(config->runtime_source, output_file);
+        }
+        if (S_ISREG(st.st_mode)) {
+            printf("Embedding user-chosen Python binary: %s\n", config->runtime_source);
+            return python_embed_single_as_tree(config->runtime_source, output_file);
+        }
+        fprintf(stderr, "Error: --runtime-source must be a file or directory\n");
+        return UB_ERROR_INVALID_ARGS;
+    }
+#endif
+
+    /* Fall back to host probe. */
+    ub_runtime_info_t runtime_info;
     result = ub_detect_runtime_binary(UB_RUNTIME_PYTHON, &runtime_info);
     if (result != UB_SUCCESS) {
-        fprintf(stderr, "Error: Python runtime not found on system\n");
+        fprintf(stderr, "Error: Python runtime not found on system.\n"
+                        "  Hint: run `scripts/vendor-runtimes.sh python` to vendor a\n"
+                        "        hermetic Python, then pass --runtime-source=<cache-dir>.\n");
         return result;
     }
-    
+
     printf("Embedding Python runtime: %s\n", runtime_info.binary_path);
     printf("Python version: %s\n", runtime_info.version_string ? runtime_info.version_string : "unknown");
 
 #ifdef PLATFORM_WINDOWS
-    // On Windows, we need to embed the entire Python directory structure
-    // Extract the directory from python.exe path
+    /* Windows path still uses the legacy multi-file embed (V4 marker). */
     char python_dir[1024];
     strcpy(python_dir, runtime_info.binary_path);
     char* last_slash = strrchr(python_dir, '\\');
-    if (last_slash) {
-        *last_slash = '\0';
-    } else {
+    if (last_slash) { *last_slash = '\0'; }
+    else {
         fprintf(stderr, "Error: Invalid Python binary path format\n");
         ub_runtime_info_cleanup(&runtime_info);
         return UB_ERROR_INVALID_ARGS;
     }
-    
     printf("Python directory: %s\n", python_dir);
-    
-    // Embed the complete Windows Python runtime
     result = python_embed_windows_runtime(python_dir, output_file);
-    if (result != UB_SUCCESS) {
-        ub_runtime_info_cleanup(&runtime_info);
-        return result;
-    }
 #else
-    // On Unix-like systems, embed just the Python binary
+    /* POSIX: emit a 1-record tree using the host binary at bin/python3.
+     * Bundle is V5-format but uses the host's interpreter — NOT portable.
+     * The hint above tells users how to fix it. */
     printf("Binary size: %.2f MB\n", runtime_info.binary_size / (1024.0 * 1024.0));
-    
-    result = ub_embed_runtime_binary(runtime_info.binary_path, output_file);
-    if (result != UB_SUCCESS) {
-        ub_runtime_info_cleanup(&runtime_info);
-        return result;
-    }
+    printf("note: bundle will use host /usr/bin/python3 (non-portable).\n"
+           "      Run `scripts/vendor-runtimes.sh python` + --runtime-source for a hermetic bundle.\n");
+    result = python_embed_single_as_tree(runtime_info.binary_path, output_file);
 #endif
-    
-    // Cleanup
+
     ub_runtime_info_cleanup(&runtime_info);
-    
     return result;
 }
 

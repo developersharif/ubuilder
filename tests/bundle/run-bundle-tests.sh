@@ -22,6 +22,7 @@ BUILD_DIR="${UBUILDER_BUILD_DIR:-$REPO_ROOT/build}"
 UBUILDER_BIN="${UBUILDER_BIN:-$BUILD_DIR/src/ubuilder}"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures"
 WORK_DIR="$(mktemp -d -t ubuilder-bundle-tests.XXXXXX)"
+RUNTIMES_CACHE="${UBUILDER_RUNTIMES_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/runtimes}"
 
 # ---------- output helpers ----------
 if [[ -t 1 ]]; then
@@ -226,6 +227,75 @@ for rt in "${REQUESTED[@]}"; do
         *) warn "unknown runtime '$rt' — skipping"; continue ;;
     esac
     run_case "$rt" || ((failures++))
+done
+
+# M1-B (Python hermetic). The headline test of the entire M1 program:
+# build a Python bundle using a vendored interpreter, then run it with
+# PATH stripped to prove the bundle does NOT need host python3.
+run_hermetic_python() {
+    local hermetic_dir
+    hermetic_dir="$(find "$RUNTIMES_CACHE/python" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    if [[ -z "$hermetic_dir" || ! -x "$hermetic_dir/bin/python3" ]]; then
+        log ""
+        log "── python (hermetic) ──"
+        warn "vendored Python not found at $RUNTIMES_CACHE/python/*"
+        warn "skipping hermetic test; run scripts/vendor-runtimes.sh python first"
+        return 0
+    fi
+
+    local fdir="$FIXTURE_DIR/python"
+    local cw="$WORK_DIR/python-hermetic"
+    mkdir -p "$cw/build" "$cw/run"
+    log ""
+    log "── python (hermetic via --runtime-source) ──"
+    info "vendored runtime: $hermetic_dir"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --runtime-source="$hermetic_dir" \
+            --output="$cw/build/app" \
+            >"$cw/build.log" 2>&1; then
+        fail "ubuilder build failed (see $cw/build.log)"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    ok "bundle built ($(du -h "$cw/build/app" | cut -f1))"
+
+    cp "$cw/build/app" "$cw/run/app"
+    chmod +x "$cw/run/app"
+
+    # The actual hermeticity proof: PATH points at an empty dir, so the
+    # only Python available is the one inside the bundle.
+    local fake_path
+    fake_path="$(mktemp -d)"
+    local exit_code=0
+    ( cd "$cw/run" && PATH="$fake_path" ./app "hello world" "it's" "ok" ) \
+        >"$cw/stdout.txt" 2>"$cw/stderr.txt" || exit_code=$?
+    rmdir "$fake_path"
+
+    local rc=0
+    if (( exit_code != 0 )); then
+        fail "hermetic bundle exited $exit_code (expected 0)"
+        sed 's/^/    [stderr] /' "$cw/stderr.txt" | tail -n 10
+        rc=1
+    fi
+    if ! diff -u "$fdir/expected.txt" "$cw/stdout.txt" >"$cw/stdout.diff" 2>&1; then
+        fail "hermetic bundle stdout differs from expected"
+        sed 's/^/    /' "$cw/stdout.diff" | head -n 30
+        rc=1
+    fi
+    if (( rc == 0 )); then
+        ok "hermetic bundle runs with PATH stripped — true zero-host-dep"
+    fi
+    return $rc
+}
+
+# Only run hermetic case when the user requested python (or default-all).
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "python" ]]; then
+        run_hermetic_python || ((failures++))
+        break
+    fi
 done
 
 log ""

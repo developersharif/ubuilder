@@ -45,7 +45,8 @@ static ub_result_t php_validate_project(const char* project_dir) {
 }
 
 // Embed PHP runtime
-static ub_result_t php_embed_runtime(FILE* output_file) {
+static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_file) {
+    (void)config;  /* M1-D (PHP hermetic) will honor config->runtime_source. */
     ub_runtime_info_t runtime_info;
     ub_result_t result;
     

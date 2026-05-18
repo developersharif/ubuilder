@@ -24,6 +24,7 @@
 #else
     #include <unistd.h>
     #include <sys/types.h>
+    #include <dirent.h>
 #endif
 
 #ifdef PLATFORM_MACOS
@@ -619,7 +620,7 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
     long data_start_offset = ftell(output_file);
     
     // 3. Embed runtime-specific runtime
-    result = builder->embed_runtime(output_file);
+    result = builder->embed_runtime(config, output_file);
     if (result != UB_SUCCESS) {
         fclose(output_file);
         fprintf(stderr, "Error: Failed to embed %s runtime\n", builder->name);
@@ -727,20 +728,64 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     // Extract embedded runtime binary
 #ifdef PLATFORM_WINDOWS
     if (runtime == UB_RUNTIME_PHP) {
-        // Windows PHP uses multiple files format
         result = ub_extract_windows_php_runtime(data_file, temp_dir, runtime_binary_path);
     } else if (runtime == UB_RUNTIME_NODEJS) {
-        // Windows Node.js uses multiple files format
         result = ub_extract_windows_nodejs_runtime(data_file, temp_dir, runtime_binary_path);
     } else if (runtime == UB_RUNTIME_PYTHON) {
-        // Windows Python uses multiple files format
         result = ub_extract_windows_python_runtime(data_file, temp_dir, runtime_binary_path);
     } else {
-        // Other runtimes use single binary format
         result = ub_extract_runtime_binary(data_file, temp_dir, runtime_binary_path);
     }
 #else
-    result = ub_extract_runtime_binary(data_file, temp_dir, runtime_binary_path);
+    /* M1: POSIX Python bundles use the V5 tree format. Detect the magic by
+     * peeking the first 4 bytes; fall back to the legacy single-binary
+     * extractor for runtimes that haven't migrated yet (PHP, Node). */
+    long peek_pos = ftell(data_file);
+    uint32_t magic = 0;
+    if (fread(&magic, sizeof(magic), 1, data_file) != 1) return UB_ERROR_EXTRACTION_FAILED;
+    if (fseek(data_file, peek_pos, SEEK_SET) != 0)       return UB_ERROR_EXTRACTION_FAILED;
+    if (magic == UB_RUNTIME_TREE_MAGIC) {
+        /* Tree-format runtime. Extract to <temp_dir>/runtime/ and point
+         * runtime_binary_path at <temp_dir>/runtime/bin/<rt>. */
+        char tree_root[1024];
+        snprintf(tree_root, sizeof(tree_root), "%s/runtime", temp_dir);
+        result = ub_extract_runtime_tree(data_file, tree_root);
+        if (result == UB_SUCCESS) {
+            const char* bin_name =
+                runtime == UB_RUNTIME_PYTHON ? "bin/python3" :
+                runtime == UB_RUNTIME_PHP    ? "bin/php"     :
+                runtime == UB_RUNTIME_NODEJS ? "bin/node"    : NULL;
+            if (!bin_name) return UB_ERROR_RUNTIME_NOT_FOUND;
+            snprintf(runtime_binary_path, 1024, "%s/%s", tree_root, bin_name);
+            /* python-build-standalone ships `bin/python3` as a symlink to a
+             * versioned binary which we couldn't replicate during extract
+             * (symlinks are followed at embed time). If python3 is missing
+             * but `bin/python3.X` exists, fall through to that. */
+            struct stat st;
+            if (stat(runtime_binary_path, &st) != 0) {
+                DIR* d = opendir(tree_root);
+                if (d) {
+                    /* No-op: tree_root/bin contains versioned names — try one. */
+                    closedir(d);
+                }
+                char alt[1024];
+                snprintf(alt, sizeof(alt), "%s/bin", tree_root);
+                DIR* bd = opendir(alt);
+                if (bd) {
+                    struct dirent* de;
+                    while ((de = readdir(bd)) != NULL) {
+                        if (strncmp(de->d_name, "python3.", 8) == 0) {
+                            snprintf(runtime_binary_path, 1024, "%s/%s", alt, de->d_name);
+                            break;
+                        }
+                    }
+                    closedir(bd);
+                }
+            }
+        }
+    } else {
+        result = ub_extract_runtime_binary(data_file, temp_dir, runtime_binary_path);
+    }
 #endif
     if (result != UB_SUCCESS) {
         return result;

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# scripts/vendor-runtimes.sh
+#
+# Download hermetic interpreters for UBuilder's M1 path (audit §4.2).
+# Downloads are pinned by version + SHA-256; cache lives under
+# $UBUILDER_RUNTIMES_CACHE (default: $XDG_CACHE_HOME/ubuilder/runtimes/
+# or ~/.cache/ubuilder/runtimes/).
+#
+# Usage:
+#   scripts/vendor-runtimes.sh                    # fetch all default runtimes
+#   scripts/vendor-runtimes.sh python             # specific runtime(s)
+#   UBUILDER_RUNTIMES_CACHE=/path … vendor-runtimes.sh python
+#
+# Honors the Apple-sandbox rule: every download is checksum-verified before
+# extraction; extraction failure leaves no partial artefact in the cache.
+
+set -euo pipefail
+
+CACHE_ROOT="${UBUILDER_RUNTIMES_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/runtimes}"
+
+# Detect platform/arch for tag construction.
+case "$(uname -s)" in
+    Linux)  PLATFORM=linux ;;
+    Darwin) PLATFORM=macos ;;
+    *)      echo "unsupported OS: $(uname -s)" >&2; exit 2 ;;
+esac
+case "$(uname -m)" in
+    x86_64|amd64) ARCH=x86_64 ;;
+    aarch64|arm64) ARCH=aarch64 ;;
+    *) echo "unsupported arch: $(uname -m)" >&2; exit 2 ;;
+esac
+
+# ----- runtime manifest --------------------------------------------------
+# Each entry is: <runtime>|<version-tag>|<url>|<sha256>|<extracted-dir-name>
+# Linux x86_64 only in this commit; macOS / arm64 will be added as the M1
+# work proceeds. python-build-standalone tags publish artefacts for all four.
+
+PYTHON_VER="3.12.13+20260510"
+PYTHON_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-${PYTHON_VER}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+PYTHON_SHA="d480f5d5878910ecbae212bf23bd7c25d7b209eb8cf5e98823c977384d272e88"
+
+manifest() {
+    # Stdout: "<key>|<url>|<sha256>|<cache-subdir>"
+    if [[ "$PLATFORM" == "linux" && "$ARCH" == "x86_64" ]]; then
+        printf 'python|%s|%s|python/%s\n' "$PYTHON_URL" "$PYTHON_SHA" "$PYTHON_VER"
+    fi
+    # PHP and Node entries land here in subsequent M1 phases.
+}
+
+# ----- helpers -----------------------------------------------------------
+
+verify_sha() {
+    # $1 = file, $2 = expected sha256 (hex)
+    local got
+    got="$(sha256sum "$1" | awk '{print $1}')"
+    if [[ "$got" != "$2" ]]; then
+        printf 'sha256 mismatch for %s\n  expected: %s\n  got:      %s\n' \
+            "$1" "$2" "$got" >&2
+        return 1
+    fi
+}
+
+download_one() {
+    local runtime="$1" url="$2" sha="$3" cache_subdir="$4"
+    local dest="$CACHE_ROOT/$cache_subdir"
+    local marker="$dest/.vendor-ok"
+
+    if [[ -f "$marker" ]]; then
+        printf '  %s already present at %s\n' "$runtime" "$dest"
+        return 0
+    fi
+
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local tarball="$tmpdir/runtime.tar.gz"
+    printf '  downloading %s\n    -> %s\n' "$url" "$tarball"
+    curl -fSL --retry 3 -o "$tarball" "$url"
+
+    printf '  verifying sha256\n'
+    verify_sha "$tarball" "$sha"
+
+    printf '  extracting\n'
+    mkdir -p "$dest"
+    tar -xzf "$tarball" -C "$tmpdir"
+    # python-build-standalone tarballs unpack to ./python/
+    local extracted
+    extracted="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d ! -name "$(basename "$tmpdir")" | head -1)"
+    if [[ -z "$extracted" ]]; then
+        echo "extraction produced no directory" >&2
+        return 1
+    fi
+    # Copy contents of extracted/ into $dest (we already mkdir'd it).
+    cp -a "$extracted"/. "$dest"/
+    touch "$marker"
+    printf '  vendored %s -> %s\n' "$runtime" "$dest"
+}
+
+# ----- main --------------------------------------------------------------
+
+if (($# == 0)); then
+    REQUESTED=("python")    # default set
+else
+    REQUESTED=("$@")
+fi
+
+mkdir -p "$CACHE_ROOT"
+
+printf 'vendoring runtimes into %s\n' "$CACHE_ROOT"
+printf 'platform=%s arch=%s\n' "$PLATFORM" "$ARCH"
+
+declare -A SEEN
+while IFS='|' read -r runtime url sha subdir; do
+    SEEN[$runtime]=1
+    want=0
+    for r in "${REQUESTED[@]}"; do
+        if [[ "$r" == "$runtime" || "$r" == "all" ]]; then want=1; break; fi
+    done
+    (( want )) || continue
+    printf '\n=== %s ===\n' "$runtime"
+    download_one "$runtime" "$url" "$sha" "$subdir"
+done < <(manifest)
+
+# Surface unsupported requests loudly.
+for r in "${REQUESTED[@]}"; do
+    [[ "$r" == "all" ]] && continue
+    [[ -n "${SEEN[$r]:-}" ]] || {
+        printf '\nwarning: no vendor entry for %s on %s/%s yet\n' "$r" "$PLATFORM" "$ARCH" >&2
+    }
+done
+
+printf '\ndone.\n'

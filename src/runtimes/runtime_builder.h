@@ -16,7 +16,11 @@ typedef struct {
     
     // Builder functions
     ub_result_t (*validate_project)(const char* project_dir);
-    ub_result_t (*embed_runtime)(FILE* output_file);
+    /* M1: embed_runtime receives the full config so it can honor
+     * runtime_source / --use-host-runtime. Pre-M1 builders ignored the
+     * config; the parameter is now mandatory but unused by PHP/Node until
+     * their hermetic paths land (M1-D / M1-E). */
+    ub_result_t (*embed_runtime)(const ub_config_t* config, FILE* output_file);
     ub_result_t (*embed_application)(const char* project_dir, FILE* output_file);
     ub_result_t (*generate_launcher)(FILE* output_file);
     

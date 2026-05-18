@@ -14,8 +14,9 @@ static struct option long_options[] = {
     {"runtime",     required_argument, 0, 'r'},
     {"output",      required_argument, 0, 'o'},
     {"entry-point", required_argument, 0, 'e'},
-    {"config",      required_argument, 0,  1 },
-    {"gui",         no_argument,       0, 'g'},
+    {"config",         required_argument, 0,  1 },
+    {"runtime-source", required_argument, 0,  2 },
+    {"gui",            no_argument,       0, 'g'},
     {"verbose",     no_argument,       0, 'v'},
     {"help",        no_argument,       0, 'h'},
     {"version",     no_argument,       0, 'V'},
@@ -33,6 +34,9 @@ static void print_usage(const char* program_name) {
     printf("  -e, --entry-point FILE    Application entry point\n");
     printf("      --config PATH         Explicit config file (default: ./ubuilder.json,\n");
     printf("                            or <project-dir>/ubuilder.json)\n");
+    printf("      --runtime-source PATH Vendored interpreter directory or binary to embed\n");
+    printf("                            (M1; default: probe host PATH). See\n");
+    printf("                            docs/architecture/M1_HERMETIC_INTERPRETERS.md.\n");
     printf("  -g, --gui                 Enable GUI support\n");
     printf("  -v, --verbose             Enable verbose output\n");
     printf("  -h, --help                Show this help message\n");
@@ -100,6 +104,13 @@ static ub_result_t parse_arguments(int argc, char* argv[],
             *config_path_out = strdup(argv[++i]);
         } else if (strncmp(arg, "--config=", 9) == 0) {
             *config_path_out = strdup(arg + 9);
+        } else if (strcmp(arg, "--runtime-source") == 0) {
+            if (i + 1 >= argc) { fprintf(stderr, "Error: --runtime-source requires an argument\n"); return UB_ERROR_INVALID_ARGS; }
+            config->runtime_source = strdup(argv[++i]);
+            presence->runtime_source = 1;
+        } else if (strncmp(arg, "--runtime-source=", 17) == 0) {
+            config->runtime_source = strdup(arg + 17);
+            presence->runtime_source = 1;
         } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
             presence->gui = 1;
@@ -144,6 +155,10 @@ static ub_result_t parse_arguments(int argc, char* argv[],
                 break;
             case 1: /* --config */
                 *config_path_out = strdup(optarg);
+                break;
+            case 2: /* --runtime-source */
+                config->runtime_source = strdup(optarg);
+                presence->runtime_source = 1;
                 break;
             case 'g':
                 config->enable_gui = 1;
@@ -192,6 +207,7 @@ static void free_config(ub_config_t* config) {
     free(config->project_dir);
     free(config->output_path);
     free(config->entry_point);
+    free(config->runtime_source);
     memset(config, 0, sizeof(*config));
 }
 
@@ -265,6 +281,12 @@ int main(int argc, char* argv[]) {
     if (config.verbose) {
         printf("UBuilder %s starting...\n", ub_get_version_string());
         printf("Platform: %s\n", ub_get_platform_name());
+        if (config.runtime_source) {
+            printf("Runtime source: %s\n", config.runtime_source);
+            printf("note: --runtime-source / runtime_options.<rt>.source is plumbed (M1-A)\n"
+                   "      but the builder still uses the host runtime in this build.\n"
+                   "      M1-B wires the vendored tree into the embed path.\n");
+        }
     }
 
     result = ub_build_executable(&config);

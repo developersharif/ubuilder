@@ -314,8 +314,32 @@ ub_result_t ub_config_apply(const ub_config_file_t*  file,
         }
     }
 
-    /* Honestly flag keys we parse but don't yet honor. */
-    static const char* ignored[] = { "include", "exclude", "runtime_options", "build", NULL };
+    /* M1: runtime_options.<rt>.source — only honor the key for the *selected*
+     * runtime to avoid configs that quietly carry stale paths for other rts. */
+    if (!presence->runtime_source && !cfg->runtime_source) {
+        const json_value_t* rto = json_obj_get(file->root, "runtime_options");
+        if (rto && rto->type == JSON_OBJECT) {
+            const char* rt_key =
+                cfg->runtime == UB_RUNTIME_PYTHON ? "python" :
+                cfg->runtime == UB_RUNTIME_PHP    ? "php"    :
+                cfg->runtime == UB_RUNTIME_NODEJS ? "node"   : NULL;
+            if (rt_key) {
+                const json_value_t* per_rt = json_obj_get(rto, rt_key);
+                if (per_rt && per_rt->type == JSON_OBJECT) {
+                    const json_value_t* src = json_obj_get(per_rt, "source");
+                    if (src) {
+                        char* s = NULL;
+                        int rc = expect_string(file->path, "runtime_options.<rt>.source", src, &s);
+                        if (rc < 0) return UB_ERROR_INVALID_ARGS;
+                        if (rc > 0) cfg->runtime_source = s;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Honestly flag keys we parse but don't yet honor in the build pipeline. */
+    static const char* ignored[] = { "include", "exclude", "build", NULL };
     for (size_t i = 0; ignored[i]; i++) {
         if (json_obj_get(file->root, ignored[i]) && cfg->verbose) {
             fprintf(stderr, "note: %s: \"%s\" is parsed but not yet honored by the build\n",

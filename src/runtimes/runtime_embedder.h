@@ -25,6 +25,24 @@ ub_result_t ub_embed_runtime_binary(const char* binary_path, FILE* output_file);
 // Function to extract embedded runtime binary
 ub_result_t ub_extract_runtime_binary(FILE* input_file, const char* temp_dir, char* extracted_path);
 
+/*
+ * M1: tree-format embed/extract. Header is [u32 magic 'UBRT']. Records
+ * follow as [u16 path_len][path][u32 mode][u64 size][bytes], terminated
+ * by a single [u16 path_len=0] sentinel. Paths use '/' separators.
+ *
+ * The sentinel design (rather than a leading count) lets the writer
+ * stream records into an append-mode output file without seeking back
+ * to patch a count — important since the bundle writer keeps the output
+ * in append mode for the whole build.
+ *
+ * Used by the hermetic Python path (and PHP/Node when M1-D/E land).
+ * Honors the Apple-sandbox rule: extraction creates files with `mode`
+ * preserved (executables stay executable), not 0644 + a chmod afterwards.
+ */
+#define UB_RUNTIME_TREE_MAGIC 0x54524255u  /* 'UBRT' little-endian */
+ub_result_t ub_embed_runtime_tree(const char* source_dir, FILE* output_file);
+ub_result_t ub_extract_runtime_tree(FILE* input_file, const char* dest_dir);
+
 // Function to extract PHP extensions and create custom php.ini
 ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir);
 

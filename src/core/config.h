@@ -10,13 +10,14 @@ extern "C" {
 /* Bitfield tracking which CLI flags were explicitly set by the user.
  * The config-file layer only fills fields whose presence bit is 0. */
 typedef struct {
-    unsigned project_dir : 1;
-    unsigned output      : 1;
-    unsigned entry_point : 1;
-    unsigned runtime     : 1;
-    unsigned gui         : 1;
-    unsigned verbose     : 1;
-    unsigned compression : 1;
+    unsigned project_dir    : 1;
+    unsigned output         : 1;
+    unsigned entry_point    : 1;
+    unsigned runtime        : 1;
+    unsigned gui            : 1;
+    unsigned verbose        : 1;
+    unsigned compression    : 1;
+    unsigned runtime_source : 1;
 } ub_cli_presence_t;
 
 typedef struct ub_config_file ub_config_file_t;

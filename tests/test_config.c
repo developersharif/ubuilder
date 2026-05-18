@@ -175,6 +175,52 @@ static void test_config_no_discovery(void) {
     if (chdir(cwd) != 0) { /* best effort */ }
 }
 
+static void test_config_runtime_source(void) {
+    /* M1: runtime_options.python.source is applied only for the selected runtime. */
+    const char* json =
+        "{\n"
+        "  \"runtime\": \"python\",\n"
+        "  \"entry_point\": \"main.py\",\n"
+        "  \"runtime_options\": {\n"
+        "    \"python\": { \"source\": \"/opt/hermetic-python\" },\n"
+        "    \"php\":    { \"source\": \"/opt/hermetic-php\"    }\n"
+        "  }\n"
+        "}\n";
+    char* path = write_tmp(json);
+    if (!path) return;
+
+    ub_config_file_t* file = NULL;
+    EXPECT("runtime_source: config loads",
+           ub_config_load(path, NULL, &file) == UB_SUCCESS && file != NULL);
+
+    /* Selected runtime is Python — the python.source key should be applied. */
+    ub_config_t       cfg = {0};
+    ub_cli_presence_t pre = {0};
+    cfg.runtime = UB_RUNTIME_UNKNOWN;
+    EXPECT("runtime_source: apply ok",   ub_config_apply(file, &pre, &cfg) == UB_SUCCESS);
+    EXPECT("runtime_source: python runtime selected from file",
+           cfg.runtime == UB_RUNTIME_PYTHON);
+    EXPECT("runtime_source: python.source applied",
+           cfg.runtime_source && strcmp(cfg.runtime_source, "/opt/hermetic-python") == 0);
+
+    /* CLI override wins. */
+    ub_config_t       cfg2 = {0};
+    ub_cli_presence_t pre2 = {0};
+    cfg2.runtime        = UB_RUNTIME_PYTHON;
+    pre2.runtime        = 1;
+    cfg2.runtime_source = strdup("/cli/override");
+    pre2.runtime_source = 1;
+    EXPECT("runtime_source: cli-override apply ok",
+           ub_config_apply(file, &pre2, &cfg2) == UB_SUCCESS);
+    EXPECT("runtime_source: CLI runtime_source preserved over config",
+           cfg2.runtime_source && strcmp(cfg2.runtime_source, "/cli/override") == 0);
+
+    free(cfg.project_dir);  free(cfg.entry_point);  free(cfg.output_path);  free(cfg.runtime_source);
+    free(cfg2.project_dir); free(cfg2.entry_point); free(cfg2.output_path); free(cfg2.runtime_source);
+    ub_config_free(file);
+    unlink(path);
+}
+
 static void test_config_unknown_key_warns(void) {
     /* Unknown keys produce a warning to stderr but don't fail. */
     const char* json = "{\"runtime\":\"python\", \"entry_point\":\"x.py\", \"made_up_key\": 1}";
@@ -200,5 +246,6 @@ void test_config(void) {
     test_config_type_error();
     test_config_explicit_missing();
     test_config_no_discovery();
+    test_config_runtime_source();
     test_config_unknown_key_warns();
 }

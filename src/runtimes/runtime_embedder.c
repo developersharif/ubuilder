@@ -36,6 +36,7 @@
     #endif
 #else
     #include <unistd.h>
+    #include <dirent.h>
 #endif
 
 /* S4/S5 (audit): the old `execute_command` was a popen() shell-out used to
@@ -777,7 +778,222 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
     if (files_extracted == 0) {
         return UB_ERROR_EXTRACTION_FAILED;
     }
-    
+
     return UB_SUCCESS;
 }
 #endif
+
+/* ================================================================
+ * M1: Tree-format embed / extract
+ * ================================================================
+ *
+ * Header (8 bytes):   [u32 magic 'UBRT'][u32 file_count]
+ * Per record:         [u16 path_len][path bytes][u32 mode][u64 size][bytes]
+ *
+ * Paths use '/' separators on all platforms. Directories are implied by
+ * the paths of their contained files; empty directories are not preserved.
+ * Mode preserves the executable bit so vendored interpreter binaries stay
+ * runnable after extraction. See runtime_embedder.h.
+ */
+
+static int has_path_sep(const char* s) {
+    for (; *s; s++) if (*s == '/' || *s == '\\') return 1;
+    return 0;
+}
+
+/* Recursive tree walker for embed. `prefix_len` is the byte offset into
+ * the absolute path where the relative path starts. */
+static ub_result_t embed_tree_walk(const char* abs_path,
+                                   size_t prefix_len,
+                                   FILE*  out,
+                                   uint32_t* count) {
+    struct stat st;
+    if (lstat(abs_path, &st) != 0) return UB_ERROR_FILE_NOT_FOUND;
+
+    if (S_ISDIR(st.st_mode)) {
+#ifdef PLATFORM_WINDOWS
+        WIN32_FIND_DATAA fd;
+        char pattern[1024];
+        snprintf(pattern, sizeof(pattern), "%s\\*", abs_path);
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) return UB_SUCCESS;
+        do {
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+            char child[1024];
+            snprintf(child, sizeof(child), "%s\\%s", abs_path, fd.cFileName);
+            ub_result_t rc = embed_tree_walk(child, prefix_len, out, count);
+            if (rc != UB_SUCCESS) { FindClose(h); return rc; }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+#else
+        DIR* d = opendir(abs_path);
+        if (!d) return UB_SUCCESS;  /* unreadable dir — skip */
+        struct dirent* de;
+        while ((de = readdir(d)) != NULL) {
+            if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+            size_t plen = strlen(abs_path);
+            size_t nlen = strlen(de->d_name);
+            char* child = (char*)malloc(plen + 1 + nlen + 1);
+            if (!child) { closedir(d); return UB_ERROR_MEMORY_ALLOCATION; }
+            snprintf(child, plen + 1 + nlen + 1, "%s/%s", abs_path, de->d_name);
+            ub_result_t rc = embed_tree_walk(child, prefix_len, out, count);
+            free(child);
+            if (rc != UB_SUCCESS) { closedir(d); return rc; }
+        }
+        closedir(d);
+#endif
+        return UB_SUCCESS;
+    }
+
+    if (!S_ISREG(st.st_mode)) {
+        /* Symlinks: follow and embed the target's content with the link's
+         * own path. Other special files (devices, sockets) are skipped. */
+        if (!S_ISLNK(st.st_mode)) return UB_SUCCESS;
+    }
+
+    /* Build the relative path with '/' separators. */
+    const char* rel = abs_path + prefix_len;
+    while (*rel == '/' || *rel == '\\') rel++;
+
+    size_t rlen = strlen(rel);
+    if (rlen > 0xFFFF) return UB_ERROR_INVALID_ARGS;
+
+    /* Normalize backslashes to forward slashes. */
+    char* nrel = (char*)malloc(rlen + 1);
+    if (!nrel) return UB_ERROR_MEMORY_ALLOCATION;
+    for (size_t i = 0; i < rlen; i++) nrel[i] = (rel[i] == '\\') ? '/' : rel[i];
+    nrel[rlen] = 0;
+
+    /* Open and re-stat through the symlink to get the target size/content. */
+    FILE* in = fopen(abs_path, "rb");
+    if (!in) { free(nrel); return UB_ERROR_FILE_NOT_FOUND; }
+    if (fseek(in, 0, SEEK_END) != 0) { fclose(in); free(nrel); return UB_ERROR_FILE_NOT_FOUND; }
+    long sz = ftell(in);
+    if (sz < 0) { fclose(in); free(nrel); return UB_ERROR_FILE_NOT_FOUND; }
+    fseek(in, 0, SEEK_SET);
+
+    uint16_t path_len = (uint16_t)rlen;
+    uint32_t mode     = (uint32_t)(st.st_mode & 0xFFFu);
+    uint64_t size64   = (uint64_t)sz;
+
+    if (fwrite(&path_len, sizeof(path_len), 1, out) != 1 ||
+        fwrite(nrel,      1, rlen, out)             != rlen ||
+        fwrite(&mode,     sizeof(mode), 1, out)     != 1 ||
+        fwrite(&size64,   sizeof(size64), 1, out)   != 1) {
+        fclose(in); free(nrel); return UB_ERROR_EXTRACTION_FAILED;
+    }
+
+    char buf[65536];
+    long remaining = sz;
+    while (remaining > 0) {
+        size_t want = (remaining > (long)sizeof(buf)) ? sizeof(buf) : (size_t)remaining;
+        size_t got  = fread(buf, 1, want, in);
+        if (got == 0) { fclose(in); free(nrel); return UB_ERROR_EXTRACTION_FAILED; }
+        if (fwrite(buf, 1, got, out) != got) { fclose(in); free(nrel); return UB_ERROR_EXTRACTION_FAILED; }
+        remaining -= (long)got;
+    }
+    fclose(in);
+    free(nrel);
+    (*count)++;
+    return UB_SUCCESS;
+}
+
+ub_result_t ub_embed_runtime_tree(const char* source_dir, FILE* output_file) {
+    if (!source_dir || !output_file) return UB_ERROR_INVALID_ARGS;
+    struct stat st;
+    if (stat(source_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return UB_ERROR_FILE_NOT_FOUND;
+    }
+
+    /* Write magic, stream records, then a u16=0 sentinel. The append-mode
+     * output file precludes seek-back patching, hence the sentinel rather
+     * than a leading count. */
+    uint32_t magic = UB_RUNTIME_TREE_MAGIC;
+    uint32_t count = 0;
+    if (fwrite(&magic, sizeof(magic), 1, output_file) != 1) return UB_ERROR_EXTRACTION_FAILED;
+
+    size_t prefix_len = strlen(source_dir);
+    ub_result_t rc = embed_tree_walk(source_dir, prefix_len, output_file, &count);
+    if (rc != UB_SUCCESS) return rc;
+
+    uint16_t sentinel = 0;
+    if (fwrite(&sentinel, sizeof(sentinel), 1, output_file) != 1)
+        return UB_ERROR_EXTRACTION_FAILED;
+
+    printf("Embedded %u files from %s\n", (unsigned)count, source_dir);
+    return UB_SUCCESS;
+}
+
+ub_result_t ub_extract_runtime_tree(FILE* input_file, const char* dest_dir) {
+    if (!input_file || !dest_dir) return UB_ERROR_INVALID_ARGS;
+
+    uint32_t magic = 0;
+    if (fread(&magic, sizeof(magic), 1, input_file) != 1)  return UB_ERROR_EXTRACTION_FAILED;
+    if (magic != UB_RUNTIME_TREE_MAGIC)                    return UB_ERROR_EXTRACTION_FAILED;
+
+    if (pc_mkdir_p(dest_dir) != 0) return UB_ERROR_EXTRACTION_FAILED;
+
+    char path[2048];
+    char target[2048];
+    char buf[65536];
+    uint32_t extracted = 0;
+    for (;;) {
+        uint16_t path_len = 0;
+        if (fread(&path_len, sizeof(path_len), 1, input_file) != 1) return UB_ERROR_EXTRACTION_FAILED;
+        if (path_len == 0) break;                /* sentinel — end of tree */
+        if (path_len >= sizeof(path))             return UB_ERROR_EXTRACTION_FAILED;
+
+        uint32_t mode     = 0;
+        uint64_t size64   = 0;
+        if (fread(path, 1, path_len, input_file) != path_len)       return UB_ERROR_EXTRACTION_FAILED;
+        path[path_len] = 0;
+        if (fread(&mode,   sizeof(mode),   1, input_file) != 1)     return UB_ERROR_EXTRACTION_FAILED;
+        if (fread(&size64, sizeof(size64), 1, input_file) != 1)     return UB_ERROR_EXTRACTION_FAILED;
+
+        /* Reject path-traversal attempts. */
+        if (path[0] == '/' || strstr(path, "..") != NULL) return UB_ERROR_EXTRACTION_FAILED;
+
+        /* Materialize: <dest_dir>/<path>. */
+        int n = snprintf(target, sizeof(target), "%s/%s", dest_dir, path);
+        if (n < 0 || (size_t)n >= sizeof(target)) return UB_ERROR_EXTRACTION_FAILED;
+#ifdef PLATFORM_WINDOWS
+        for (char* p = target; *p; p++) if (*p == '/') *p = '\\';
+#endif
+        /* mkdir -p for parent dir. */
+        char parent[2048];
+        strcpy(parent, target);
+        char* last_sep = NULL;
+        for (char* p = parent; *p; p++) {
+#ifdef PLATFORM_WINDOWS
+            if (*p == '\\' || *p == '/') last_sep = p;
+#else
+            if (*p == '/') last_sep = p;
+#endif
+        }
+        if (last_sep) {
+            *last_sep = 0;
+            if (pc_mkdir_p(parent) != 0) return UB_ERROR_EXTRACTION_FAILED;
+        }
+
+        FILE* out = fopen(target, "wb");
+        if (!out) return UB_ERROR_EXTRACTION_FAILED;
+        uint64_t remaining = size64;
+        while (remaining > 0) {
+            size_t want = (remaining > sizeof(buf)) ? sizeof(buf) : (size_t)remaining;
+            size_t got  = fread(buf, 1, want, input_file);
+            if (got == 0) { fclose(out); return UB_ERROR_EXTRACTION_FAILED; }
+            if (fwrite(buf, 1, got, out) != got) { fclose(out); return UB_ERROR_EXTRACTION_FAILED; }
+            remaining -= got;
+        }
+        fclose(out);
+
+#ifndef PLATFORM_WINDOWS
+        chmod(target, (mode_t)(mode & 0xFFFu));
+#else
+        (void)mode;
+#endif
+        extracted++;
+    }
+    (void)extracted;
+    return UB_SUCCESS;
+}

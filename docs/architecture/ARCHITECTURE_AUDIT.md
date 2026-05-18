@@ -87,9 +87,9 @@ The `src/core/platform_compat.{c,h}` files exist but are **0 bytes** — the "pl
 
 Numbered so we can reference them later.
 
-**G1. Interpreter source is the build host.** Anyone running CI on Ubuntu 24.04 produces a bundle that requires the target's glibc to be ≥ that version. There is no build of a hermetic / portable interpreter.
+**G1. ~~Interpreter source is the build host.~~** Closed for Python. With `--runtime-source=<vendored-tree>` (default M1-B path), the bundle ships the entire `python-build-standalone` interpreter — independent of the build host's glibc. `PATH=/nonexistent` invocation verified locally. PHP and Node still source from the host until M1-D / M1-E land.
 
-**G2. Interpreter stdlib is not embedded on Unix.** Python without `Lib/`, PHP without its extension `.so`s, Node without its `node_modules` resolver wired correctly — none of these are real "interpreters." Only the executable byte is embedded on Linux/macOS.
+**G2. ~~Interpreter stdlib is not embedded on Unix.~~** Closed for Python (M1-B). A hermetic Python bundle now embeds the full 4 500-file tree (`bin/`, `lib/python3.12/`, `include/`, `share/`). PHP / Node stdlib still missing until M1-D / M1-E.
 
 **G3. ~~`system()` and `/bin/sh` dependence.~~** Closed. `grep -E 'system\(|popen\(' src/core/*.c src/runtimes/*.c` returns **zero matches outside comments**. The runtime execution path went through `pc_spawn_and_wait` + `pc_remove_tree` (S1); the build/extraction path now uses `pc_mkdir_p` (S4) and `pc_path_lookup` + `pc_spawn_capture` (S4/S5) instead of `system("mkdir …")` and `popen("which …" / "php-config …")`. UBuilder no longer depends on `/bin/sh` for any operation. (Host-tool probing is still non-hermetic by *intent* — true fix is M1 — but it no longer goes through a shell.)
 
@@ -137,7 +137,7 @@ Numbered so we can reference them later.
 
 | Action | Why | How |
 |---|---|---|
-| **M1. Vendor or build hermetic interpreters per platform-arch.** | G1, G2. The build host's `/usr/bin/python3` is not portable. | Maintain `vendor/runtimes/<runtime>-<version>-<platform>-<arch>.tar.zst` — built once via a CI matrix using musl (Linux), `--enable-shared=no --without-system-libs` (PHP), `nodejs` static builds. Cache under `~/.cache/ubuilder/runtimes/`. UBuilder downloads on first use or accepts `--runtime-bundle=<path>`. |
+| **M1. Vendor or build hermetic interpreters per platform-arch.** 🟢 Python end-to-end (A+B done). PHP/Node pending (D+E). | G1, G2. The build host's `/usr/bin/python3` is not portable. | M1-A: `scripts/vendor-runtimes.sh` downloads `python-build-standalone` 3.12.13 with SHA-256 verification; `--runtime-source` CLI flag + `runtime_options.<rt>.source` config key. M1-B: new `ub_embed_runtime_tree` / `ub_extract_runtime_tree` with sentinel-terminated record format; `python_builder.c` POSIX path emits a real tree when `runtime_source` is a directory, a 1-record tree for host fallback. Launcher peeks the V5 magic and routes to the new extractor. **A hermetic Python bundle (185 MB) runs with `PATH=/nonexistent` and no host python3 on the system** — the headline M1 proof. Spec: `docs/architecture/M1_HERMETIC_INTERPRETERS.md`. |
 | **M2. Bundle the entire interpreter tree, not just the binary.** | G2. | Use the existing Windows path generalization in `runtime_embedder.c` for all OSes. Walk the runtime tree, embed each file as a `[path_len][path][size][bytes]` record. |
 | **M3. Switch payload format to a versioned container.** | G8. Allows future-proofing (compression, encryption, multiple entry points, manifests). | Define `UB1` container: `[magic 'UB01'][header_len][CBOR header][payload][SHA256][footer magic]`. CBOR keeps it tiny without a dependency; or fall back to a 64-byte fixed header. |
 | **M4. Add zstd compression for the payload.** | Bundle size (G9). zstd is BSD-licensed, ~3× faster decompression than zlib at higher ratios. | Replace ZLIB optionality with zstd vendored as a single amalgamation file. |

@@ -68,6 +68,11 @@ typedef struct {
     int enable_gui;
     int enable_compression;
     int verbose;
+    /* M1 (hermetic interpreters): explicit path to a vendored runtime tree
+     * or binary. Set by --runtime-source or runtime_options.<rt>.source in
+     * ubuilder.json. NULL = fall back to host-probe (legacy/non-hermetic).
+     * See docs/architecture/M1_HERMETIC_INTERPRETERS.md. */
+    char* runtime_source;
 } ub_config_t;
 
 // Embedded resource structure

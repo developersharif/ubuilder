@@ -51,7 +51,8 @@ static ub_result_t nodejs_embed_windows_runtime(const char* nodejs_dir, FILE* ou
 #endif
 
 // Embed Node.js runtime
-static ub_result_t nodejs_embed_runtime(FILE* output_file) {
+static ub_result_t nodejs_embed_runtime(const ub_config_t* config, FILE* output_file) {
+    (void)config;  /* M1-E (Node hermetic) will honor config->runtime_source. */
     ub_runtime_info_t runtime_info;
     ub_result_t result;
     
