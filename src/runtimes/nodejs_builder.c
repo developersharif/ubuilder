@@ -72,6 +72,17 @@ static ub_result_t nodejs_embed_runtime(const ub_config_t* config, FILE* output_
         fprintf(stderr, "Error: --runtime-source must be a file or directory\n");
         return UB_ERROR_INVALID_ARGS;
     }
+
+    /* DX: auto-discover a vendored Node in the cache unless the user
+     * explicitly opted into the host runtime (--use-host-runtime). */
+    if (config && !config->use_host_runtime) {
+        char cached[1024];
+        if (ub_runtime_cache_lookup("node", "bin/node", cached, sizeof(cached)) == 0) {
+            printf("Embedding hermetic Node.js tree (auto-discovered): %s\n", cached);
+            printf("  (run `ubuilder --use-host-runtime …` to skip auto-discovery)\n");
+            return ub_embed_runtime_tree(cached, output_file);
+        }
+    }
 #endif
 
     ub_runtime_info_t runtime_info;
@@ -113,7 +124,8 @@ static ub_result_t nodejs_embed_runtime(const ub_config_t* config, FILE* output_
      * V5-format but uses the host's interpreter — non-portable. */
     printf("Binary size: %.2f MB\n", runtime_info.binary_size / (1024.0 * 1024.0));
     printf("note: bundle will use host node (non-portable).\n"
-           "      Run `scripts/vendor-runtimes.sh node` + --runtime-source for a hermetic bundle.\n");
+           "      Run `scripts/vendor-runtimes.sh node` for a hermetic bundle\n"
+           "      (auto-discovered next build) or drop --use-host-runtime.\n");
     result = ub_embed_runtime_single_as_tree(runtime_info.binary_path, "bin/node", output_file);
     if (result != UB_SUCCESS) {
         ub_runtime_info_cleanup(&runtime_info);

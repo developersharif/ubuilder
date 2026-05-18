@@ -70,9 +70,14 @@ typedef struct {
     int verbose;
     /* M1 (hermetic interpreters): explicit path to a vendored runtime tree
      * or binary. Set by --runtime-source or runtime_options.<rt>.source in
-     * ubuilder.json. NULL = fall back to host-probe (legacy/non-hermetic).
+     * ubuilder.json. If NULL and `use_host_runtime` is 0, UBuilder
+     * auto-discovers a vendored runtime in $XDG_CACHE_HOME/ubuilder/runtimes/.
      * See docs/architecture/M1_HERMETIC_INTERPRETERS.md. */
     char* runtime_source;
+    /* DX (post-M1): explicit opt-in to use the host's installed interpreter
+     * (today's pre-M1 behavior, NOT portable). When set, suppresses cache
+     * auto-discovery and falls straight to host probe. */
+    int   use_host_runtime;
 } ub_config_t;
 
 // Embedded resource structure

@@ -1,6 +1,6 @@
 # M1 — Hermetic Interpreters
 
-**Status:** ✅ Python + Node end-to-end + **Tier-3 Docker test passes** (M1-A/B/C/E). Hermetic bundles run inside `debian:12-slim` with no Python/Node installed anywhere — the strongest possible proof of zero-host-dependency. PHP builder accepts `--runtime-source=<binary>` (M1-D plumbing done) but no upstream pre-built static PHP exists — `static-php-cli` is the documented self-build path; PHP excluded from Tier-3 until that lands.
+**Status:** ✅ Python + Node end-to-end + **Tier-3 Docker test passes** + **hermetic-by-default DX shipped** (M1-A/B/C/E + cache auto-discovery + `--use-host-runtime` opt-in). After one-time `scripts/vendor-runtimes.sh`, plain `ubuilder` produces hermetic bundles. PHP builder accepts `--runtime-source=<binary>` (M1-D plumbing done) but no upstream pre-built static PHP exists — `static-php-cli` is the documented self-build path; PHP excluded from Tier-3 until that lands.
 **Companion to:** `ARCHITECTURE_AUDIT.md` (this implements M1).
 **Goal:** UBuilder bundles stop depending on the build host's `/usr/bin/python3` (etc.). The bundle's interpreter is a vendored, redistributable build whose ABI is independent of whatever ran the build.
 
@@ -18,13 +18,15 @@ We do **not** build interpreters from source ourselves in this repo — that's a
 
 ## Configuration surface
 
-Three ways to point at a hermetic interpreter, in precedence order:
+Five ways the build can be told which runtime to embed, in precedence order:
 
-1. **CLI:** `ubuilder --runtime-source <path>` (overrides everything)
-2. **Config file:** `ubuilder.json` key `runtime_options.<runtime>.source: "/path/to/runtime-tree"`
-3. **Default cache lookup:** if neither is set, UBuilder looks at `$UBUILDER_RUNTIMES_CACHE/<runtime>/<version>/` (default `~/.cache/ubuilder/runtimes/`). If the cache is empty, falls back to the pre-M1 host-probe behavior with a verbose warning that the bundle is non-hermetic.
+1. **`--use-host-runtime` flag** — explicit opt-in to today's pre-M1 behavior (host's `/usr/bin/python3`, bundle is **not portable**). Useful for fast local dev iteration. Skips cache auto-discovery entirely. Prints a "non-portable" note.
+2. **CLI `--runtime-source <path>`** — explicit override. Path may be a directory (vendored tree) or a single file (user-chosen binary).
+3. **Config file** `runtime_options.<rt>.source: "/path"` — same as #2 but checked in with the project.
+4. **Cache auto-discovery (default for great DX)** — UBuilder looks at `$UBUILDER_RUNTIMES_CACHE/<rt>/<version>/` (default `$XDG_CACHE_HOME/ubuilder/runtimes/<rt>/`, falling back to `~/.cache/ubuilder/runtimes/<rt>/`). It picks the lexicographically-highest subdirectory that contains the expected executable (`bin/python3`, `bin/node`). `python-build-standalone` and `nodejs.org` both use sortable version strings, so "lex max" = "newest".
+5. **Host fallback** — only if #1–#4 produce nothing. Prints a note pointing at `scripts/vendor-runtimes.sh`.
 
-The `<path>` may be either a directory (treated as a runtime *tree*) or a single file (treated as a runtime *binary*, like today's Unix path). The builder picks the embed format accordingly.
+**Great DX upshot:** once a user runs `scripts/vendor-runtimes.sh python node` once, every subsequent `ubuilder` build with no flags produces hermetic bundles. To opt out of the new default and use the host runtime: pass `--use-host-runtime` or set `runtime_options.<rt>.use_host: true` in `ubuilder.json`.
 
 ## Vendoring
 

@@ -14,9 +14,10 @@ static struct option long_options[] = {
     {"runtime",     required_argument, 0, 'r'},
     {"output",      required_argument, 0, 'o'},
     {"entry-point", required_argument, 0, 'e'},
-    {"config",         required_argument, 0,  1 },
-    {"runtime-source", required_argument, 0,  2 },
-    {"gui",            no_argument,       0, 'g'},
+    {"config",            required_argument, 0,  1 },
+    {"runtime-source",    required_argument, 0,  2 },
+    {"use-host-runtime",  no_argument,       0,  3 },
+    {"gui",               no_argument,       0, 'g'},
     {"verbose",     no_argument,       0, 'v'},
     {"help",        no_argument,       0, 'h'},
     {"version",     no_argument,       0, 'V'},
@@ -34,9 +35,14 @@ static void print_usage(const char* program_name) {
     printf("  -e, --entry-point FILE    Application entry point\n");
     printf("      --config PATH         Explicit config file (default: ./ubuilder.json,\n");
     printf("                            or <project-dir>/ubuilder.json)\n");
-    printf("      --runtime-source PATH Vendored interpreter directory or binary to embed\n");
-    printf("                            (M1; default: probe host PATH). See\n");
-    printf("                            docs/architecture/M1_HERMETIC_INTERPRETERS.md.\n");
+    printf("      --runtime-source PATH Vendored interpreter directory or binary to embed.\n");
+    printf("                            Default: auto-discover from\n");
+    printf("                            $XDG_CACHE_HOME/ubuilder/runtimes/<rt>/* if present;\n");
+    printf("                            otherwise fall back to host probe (non-portable).\n");
+    printf("                            See docs/architecture/M1_HERMETIC_INTERPRETERS.md.\n");
+    printf("      --use-host-runtime    Explicit opt-in to use the host's interpreter.\n");
+    printf("                            Skips cache auto-discovery. Bundle will NOT be portable.\n");
+    printf("                            Useful for fast local dev iteration.\n");
     printf("  -g, --gui                 Enable GUI support\n");
     printf("  -v, --verbose             Enable verbose output\n");
     printf("  -h, --help                Show this help message\n");
@@ -111,6 +117,9 @@ static ub_result_t parse_arguments(int argc, char* argv[],
         } else if (strncmp(arg, "--runtime-source=", 17) == 0) {
             config->runtime_source = strdup(arg + 17);
             presence->runtime_source = 1;
+        } else if (strcmp(arg, "--use-host-runtime") == 0) {
+            config->use_host_runtime = 1;
+            presence->use_host_runtime = 1;
         } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
             presence->gui = 1;
@@ -159,6 +168,10 @@ static ub_result_t parse_arguments(int argc, char* argv[],
             case 2: /* --runtime-source */
                 config->runtime_source = strdup(optarg);
                 presence->runtime_source = 1;
+                break;
+            case 3: /* --use-host-runtime */
+                config->use_host_runtime = 1;
+                presence->use_host_runtime = 1;
                 break;
             case 'g':
                 config->enable_gui = 1;
@@ -282,10 +295,11 @@ int main(int argc, char* argv[]) {
         printf("UBuilder %s starting...\n", ub_get_version_string());
         printf("Platform: %s\n", ub_get_platform_name());
         if (config.runtime_source) {
-            printf("Runtime source: %s\n", config.runtime_source);
-            printf("note: --runtime-source / runtime_options.<rt>.source is plumbed (M1-A)\n"
-                   "      but the builder still uses the host runtime in this build.\n"
-                   "      M1-B wires the vendored tree into the embed path.\n");
+            printf("Runtime source: %s (explicit)\n", config.runtime_source);
+        } else if (config.use_host_runtime) {
+            printf("Runtime: host (explicit --use-host-runtime; bundle will NOT be portable)\n");
+        } else {
+            printf("Runtime: auto (will try cache, fall back to host if empty)\n");
         }
     }
 

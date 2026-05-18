@@ -56,6 +56,23 @@ ub_result_t ub_embed_runtime_single_as_tree(const char* binary_path,
                                             const char* dest_rel_path,
                                             FILE*       output_file);
 
+/*
+ * DX (post-M1): auto-discover a vendored runtime in the local cache.
+ * Looks at  $UBUILDER_RUNTIMES_CACHE / $XDG_CACHE_HOME/ubuilder/runtimes /
+ * ~/.cache/ubuilder/runtimes  in that order, then under
+ * <cache>/<subdir>/ for any subdirectory containing the named relative
+ * executable (e.g. python/<ver>/bin/python3). Returns 0 and writes the
+ * absolute path into `out` (size `out_cap`) on success, -1 if no usable
+ * cache entry is found.
+ *
+ * Lex sort of the version directories gives "newest first" since both
+ * python-build-standalone and nodejs.org use sortable version strings.
+ */
+int ub_runtime_cache_lookup(const char* cache_subdir,
+                            const char* rel_exe,
+                            char*       out,
+                            size_t      out_cap);
+
 // Function to extract PHP extensions and create custom php.ini
 ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir);
 

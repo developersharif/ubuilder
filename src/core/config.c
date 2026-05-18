@@ -314,9 +314,10 @@ ub_result_t ub_config_apply(const ub_config_file_t*  file,
         }
     }
 
-    /* M1: runtime_options.<rt>.source — only honor the key for the *selected*
-     * runtime to avoid configs that quietly carry stale paths for other rts. */
-    if (!presence->runtime_source && !cfg->runtime_source) {
+    /* M1 + DX: runtime_options.<rt>.{source,use_host} — only honor the key
+     * for the *selected* runtime so stale entries for unused runtimes
+     * can't bleed in. CLI flags always win. */
+    {
         const json_value_t* rto = json_obj_get(file->root, "runtime_options");
         if (rto && rto->type == JSON_OBJECT) {
             const char* rt_key =
@@ -326,12 +327,23 @@ ub_result_t ub_config_apply(const ub_config_file_t*  file,
             if (rt_key) {
                 const json_value_t* per_rt = json_obj_get(rto, rt_key);
                 if (per_rt && per_rt->type == JSON_OBJECT) {
-                    const json_value_t* src = json_obj_get(per_rt, "source");
-                    if (src) {
-                        char* s = NULL;
-                        int rc = expect_string(file->path, "runtime_options.<rt>.source", src, &s);
-                        if (rc < 0) return UB_ERROR_INVALID_ARGS;
-                        if (rc > 0) cfg->runtime_source = s;
+                    if (!presence->runtime_source && !cfg->runtime_source) {
+                        const json_value_t* src = json_obj_get(per_rt, "source");
+                        if (src) {
+                            char* s = NULL;
+                            int rc = expect_string(file->path, "runtime_options.<rt>.source", src, &s);
+                            if (rc < 0) return UB_ERROR_INVALID_ARGS;
+                            if (rc > 0) cfg->runtime_source = s;
+                        }
+                    }
+                    if (!presence->use_host_runtime) {
+                        const json_value_t* uh = json_obj_get(per_rt, "use_host");
+                        if (uh) {
+                            int b = 0;
+                            int rc = expect_bool(file->path, "runtime_options.<rt>.use_host", uh, &b);
+                            if (rc < 0) return UB_ERROR_INVALID_ARGS;
+                            if (rc > 0) cfg->use_host_runtime = b;
+                        }
                     }
                 }
             }

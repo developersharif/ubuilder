@@ -17,7 +17,8 @@ typedef struct {
     unsigned gui            : 1;
     unsigned verbose        : 1;
     unsigned compression    : 1;
-    unsigned runtime_source : 1;
+    unsigned runtime_source    : 1;
+    unsigned use_host_runtime  : 1;
 } ub_cli_presence_t;
 
 typedef struct ub_config_file ub_config_file_t;

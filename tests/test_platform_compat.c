@@ -1,4 +1,5 @@
 #include "../src/core/platform_compat.h"
+#include "../src/runtimes/runtime_embedder.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -184,6 +185,48 @@ static void test_executable_path(void) {
            pc_executable_path(small, sizeof(small)) != 0);
 }
 
+static void test_runtime_cache_lookup(void) {
+    /* Build a synthetic cache layout and probe it via the env-var override. */
+    char root[256];
+    snprintf(root, sizeof(root), "/tmp/ubuilder-cache.%d", (int)getpid());
+    pc_remove_tree(root);
+
+    /* Layout: <root>/python/{1.0,2.0,3.0}/bin/python3 (3.0 should win) */
+    char p[512];
+    snprintf(p, sizeof(p), "%s/python/1.0/bin", root); pc_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/python/1.0/bin/python3", root); touch(p, "fake");
+    chmod(p, 0755);
+    snprintf(p, sizeof(p), "%s/python/2.0/bin", root); pc_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/python/2.0/bin/python3", root); touch(p, "fake");
+    chmod(p, 0755);
+    snprintf(p, sizeof(p), "%s/python/3.0/bin", root); pc_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/python/3.0/bin/python3", root); touch(p, "fake");
+    chmod(p, 0755);
+
+    setenv("UBUILDER_RUNTIMES_CACHE", root, 1);
+
+    char out[1024];
+    int rc = ub_runtime_cache_lookup("python", "bin/python3", out, sizeof(out));
+    EXPECT("cache_lookup: returns 0",    rc == 0);
+    EXPECT("cache_lookup: picks 3.0 (highest lex order)",
+           rc == 0 && strstr(out, "/3.0") != NULL);
+
+    /* Subdir whose executable is missing (no x bit) must NOT be picked. */
+    snprintf(p, sizeof(p), "%s/python/4.0/bin", root); pc_mkdir_p(p);
+    snprintf(p, sizeof(p), "%s/python/4.0/bin/python3", root); touch(p, "fake");
+    chmod(p, 0644); /* not executable */
+    rc = ub_runtime_cache_lookup("python", "bin/python3", out, sizeof(out));
+    EXPECT("cache_lookup: skips non-executable entries",
+           rc == 0 && strstr(out, "/3.0") != NULL);
+
+    /* Empty cache subdir → -1. */
+    rc = ub_runtime_cache_lookup("nodejs-bogus", "bin/node", out, sizeof(out));
+    EXPECT("cache_lookup: missing subdir returns -1", rc == -1);
+
+    unsetenv("UBUILDER_RUNTIMES_CACHE");
+    pc_remove_tree(root);
+}
+
 void test_platform_compat(void) {
     printf("\nPlatform compatibility shim tests\n");
     printf("---------------------------------\n");
@@ -196,4 +239,5 @@ void test_platform_compat(void) {
     test_spawn_capture();
     test_temp_root();
     test_executable_path();
+    test_runtime_cache_lookup();
 }

@@ -898,6 +898,64 @@ static ub_result_t embed_tree_walk(const char* abs_path,
     return UB_SUCCESS;
 }
 
+#ifndef PLATFORM_WINDOWS
+int ub_runtime_cache_lookup(const char* cache_subdir,
+                            const char* rel_exe,
+                            char*       out,
+                            size_t      out_cap) {
+    if (!cache_subdir || !rel_exe || !out || out_cap < 16) return -1;
+
+    /* Resolve cache root: $UBUILDER_RUNTIMES_CACHE > $XDG_CACHE_HOME > $HOME. */
+    char root[1024];
+    const char* override = getenv("UBUILDER_RUNTIMES_CACHE");
+    if (override && *override) {
+        snprintf(root, sizeof(root), "%s/%s", override, cache_subdir);
+    } else {
+        const char* xdg = getenv("XDG_CACHE_HOME");
+        if (xdg && *xdg) {
+            snprintf(root, sizeof(root), "%s/ubuilder/runtimes/%s", xdg, cache_subdir);
+        } else {
+            const char* home = getenv("HOME");
+            if (!home || !*home) return -1;
+            snprintf(root, sizeof(root), "%s/.cache/ubuilder/runtimes/%s", home, cache_subdir);
+        }
+    }
+
+    DIR* d = opendir(root);
+    if (!d) return -1;
+
+    /* Collect subdir names, pick the lexicographically-greatest one with
+     * the named executable inside. */
+    char  best[256] = {0};
+    struct dirent* de;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        char probe[2048];
+        snprintf(probe, sizeof(probe), "%s/%s/%s", root, de->d_name, rel_exe);
+        if (access(probe, X_OK) != 0) continue;
+        if (best[0] == 0 || strcmp(de->d_name, best) > 0) {
+            size_t n = strlen(de->d_name);
+            if (n >= sizeof(best)) continue;
+            memcpy(best, de->d_name, n + 1);
+        }
+    }
+    closedir(d);
+
+    if (best[0] == 0) return -1;
+    int n = snprintf(out, out_cap, "%s/%s", root, best);
+    if (n < 0 || (size_t)n >= out_cap) return -1;
+    return 0;
+}
+#else
+int ub_runtime_cache_lookup(const char* cache_subdir,
+                            const char* rel_exe,
+                            char*       out,
+                            size_t      out_cap) {
+    (void)cache_subdir; (void)rel_exe; (void)out; (void)out_cap;
+    return -1;  /* Cache auto-discovery is POSIX-only for now. */
+}
+#endif
+
 ub_result_t ub_embed_runtime_single_as_tree(const char* binary_path,
                                             const char* dest_rel_path,
                                             FILE*       output_file) {

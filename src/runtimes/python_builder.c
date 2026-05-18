@@ -79,6 +79,17 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
         fprintf(stderr, "Error: --runtime-source must be a file or directory\n");
         return UB_ERROR_INVALID_ARGS;
     }
+
+    /* DX: auto-discover a vendored Python in the cache unless the user
+     * explicitly opted into the host runtime (--use-host-runtime). */
+    if (config && !config->use_host_runtime) {
+        char cached[1024];
+        if (ub_runtime_cache_lookup("python", "bin/python3", cached, sizeof(cached)) == 0) {
+            printf("Embedding hermetic Python tree (auto-discovered): %s\n", cached);
+            printf("  (run `ubuilder --use-host-runtime …` to skip auto-discovery)\n");
+            return ub_embed_runtime_tree(cached, output_file);
+        }
+    }
 #endif
 
     /* Fall back to host probe. */
@@ -113,7 +124,8 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
      * The hint above tells users how to fix it. */
     printf("Binary size: %.2f MB\n", runtime_info.binary_size / (1024.0 * 1024.0));
     printf("note: bundle will use host /usr/bin/python3 (non-portable).\n"
-           "      Run `scripts/vendor-runtimes.sh python` + --runtime-source for a hermetic bundle.\n");
+           "      Run `scripts/vendor-runtimes.sh python` for a hermetic bundle\n"
+           "      (auto-discovered next build) or drop --use-host-runtime.\n");
     result = ub_embed_runtime_single_as_tree(runtime_info.binary_path, "bin/python3", output_file);
 #endif
 

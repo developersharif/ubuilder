@@ -175,6 +175,46 @@ static void test_config_no_discovery(void) {
     if (chdir(cwd) != 0) { /* best effort */ }
 }
 
+static void test_config_use_host_runtime(void) {
+    const char* json =
+        "{\n"
+        "  \"runtime\": \"python\",\n"
+        "  \"entry_point\": \"main.py\",\n"
+        "  \"runtime_options\": {\n"
+        "    \"python\": { \"use_host\": true }\n"
+        "  }\n"
+        "}\n";
+    char* path = write_tmp(json);
+    if (!path) return;
+
+    ub_config_file_t* file = NULL;
+    EXPECT("use_host: config loads",
+           ub_config_load(path, NULL, &file) == UB_SUCCESS && file != NULL);
+
+    ub_config_t       cfg = {0};
+    ub_cli_presence_t pre = {0};
+    cfg.runtime = UB_RUNTIME_UNKNOWN;
+    EXPECT("use_host: apply ok",         ub_config_apply(file, &pre, &cfg) == UB_SUCCESS);
+    EXPECT("use_host: flag applied",     cfg.use_host_runtime == 1);
+
+    /* CLI override wins (CLI = 0, config = 1 → final = 0). */
+    ub_config_t       cfg2 = {0};
+    ub_cli_presence_t pre2 = {0};
+    cfg2.runtime          = UB_RUNTIME_PYTHON;
+    pre2.runtime          = 1;
+    cfg2.use_host_runtime = 0;
+    pre2.use_host_runtime = 1;
+    EXPECT("use_host: cli-override apply ok",
+           ub_config_apply(file, &pre2, &cfg2) == UB_SUCCESS);
+    EXPECT("use_host: CLI 0 preserved over config true",
+           cfg2.use_host_runtime == 0);
+
+    free(cfg.project_dir);  free(cfg.entry_point);  free(cfg.output_path);  free(cfg.runtime_source);
+    free(cfg2.project_dir); free(cfg2.entry_point); free(cfg2.output_path); free(cfg2.runtime_source);
+    ub_config_free(file);
+    unlink(path);
+}
+
 static void test_config_runtime_source(void) {
     /* M1: runtime_options.python.source is applied only for the selected runtime. */
     const char* json =
@@ -247,5 +287,6 @@ void test_config(void) {
     test_config_explicit_missing();
     test_config_no_discovery();
     test_config_runtime_source();
+    test_config_use_host_runtime();
     test_config_unknown_key_warns();
 }
