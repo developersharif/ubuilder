@@ -1,0 +1,5 @@
+{
+  "name": "python-bundle-fixture",
+  "runtime": "python",
+  "entry_point": "main.py"
+}

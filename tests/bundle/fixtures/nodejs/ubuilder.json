@@ -1,0 +1,5 @@
+{
+  "name": "nodejs-bundle-fixture",
+  "runtime": "node",
+  "entry_point": "main.js"
+}

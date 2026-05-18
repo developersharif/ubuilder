@@ -13,9 +13,13 @@ This directory contains comprehensive documentation for the Universal Executable
 - [Releases](releases.md) - Release notes
 - [Troubleshooting](troubleshooting.md) - Common issues and solutions
 
+### Architecture
+- [Architecture Audit](architecture/ARCHITECTURE_AUDIT.md) — honest engineering review of the path to true 0-dependency executables (gaps, refactors, phasing)
+
 ### Guides
 - [Project Instructions](guides/project-instructions.md)
 - [Debug Usage](guides/debug-usage.md)
+- [Bundle Test Harness](../tests/bundle/README.md) — end-to-end validation (build → bundle → run → assert)
 
 ### Reports & status notes
 - [Project Completion](reports/project-completion.md)

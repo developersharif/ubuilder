@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# tests/bundle/run-bundle-tests.sh
+# End-to-end bundle harness: build ubuilder -> bundle each fixture -> run the
+# bundle in a clean directory -> assert exit code and stdout.
+#
+# Usage:
+#   tests/bundle/run-bundle-tests.sh                  # run all runtimes
+#   tests/bundle/run-bundle-tests.sh python php       # filter
+#   UBUILDER_KEEP_ARTIFACTS=1 ... run-bundle-tests.sh # don't delete output on success
+#   UBUILDER_VERBOSE=1 ... run-bundle-tests.sh        # echo every command
+#
+# Exit code is the number of failed cases (0 on full success, capped at 125).
+
+set -u
+[[ "${UBUILDER_VERBOSE:-0}" == "1" ]] && set -x
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BUILD_DIR="$REPO_ROOT/build"
+UBUILDER_BIN="$BUILD_DIR/src/ubuilder"
+FIXTURE_DIR="$SCRIPT_DIR/fixtures"
+WORK_DIR="$(mktemp -d -t ubuilder-bundle-tests.XXXXXX)"
+
+# ---------- output helpers ----------
+if [[ -t 1 ]]; then
+    C_RED='\033[0;31m'; C_GRN='\033[0;32m'; C_YEL='\033[1;33m'; C_DIM='\033[2m'; C_RST='\033[0m'
+else
+    C_RED=''; C_GRN=''; C_YEL=''; C_DIM=''; C_RST=''
+fi
+log()  { printf '%b\n' "$*"; }
+info() { log "${C_DIM}[harness]${C_RST} $*"; }
+ok()   { log "${C_GRN}  ✓${C_RST} $*"; }
+fail() { log "${C_RED}  ✗${C_RST} $*"; }
+warn() { log "${C_YEL}  !${C_RST} $*"; }
+
+# ---------- argument filter ----------
+ALL_RUNTIMES=(python php nodejs)
+if (($# > 0)); then
+    REQUESTED=("$@")
+else
+    REQUESTED=("${ALL_RUNTIMES[@]}")
+fi
+
+# ---------- preflight: build ubuilder if missing ----------
+ensure_ubuilder() {
+    if [[ -x "$UBUILDER_BIN" ]]; then
+        info "ubuilder present at $UBUILDER_BIN"
+        return 0
+    fi
+    info "ubuilder not built; configuring + building"
+    mkdir -p "$BUILD_DIR"
+    ( cd "$BUILD_DIR" && cmake -DCMAKE_BUILD_TYPE=Release "$REPO_ROOT" >/dev/null )
+    cmake --build "$BUILD_DIR" -j --target ubuilder >/dev/null
+    if [[ ! -x "$UBUILDER_BIN" ]]; then
+        fail "ubuilder still missing after build"
+        return 1
+    fi
+}
+
+# ---------- preflight: host runtime present (today's bundles still need it) ----------
+host_runtime_for() {
+    case "$1" in
+        python) command -v python3 || command -v python ;;
+        php)    command -v php ;;
+        nodejs) command -v node ;;
+        *)      return 1 ;;
+    esac
+}
+
+# ---------- per-runtime fixture metadata ----------
+# Each fixture directory holds main.{py,php,js} plus expected.txt.
+fixture_dir_for() {
+    case "$1" in
+        python) printf '%s/python\n' "$FIXTURE_DIR" ;;
+        php)    printf '%s/php\n' "$FIXTURE_DIR" ;;
+        nodejs) printf '%s/nodejs\n' "$FIXTURE_DIR" ;;
+    esac
+}
+
+runtime_flag_for() {
+    # ubuilder accepts: python, php, node
+    case "$1" in
+        python) printf 'python\n' ;;
+        php)    printf 'php\n' ;;
+        nodejs) printf 'node\n' ;;
+    esac
+}
+
+# ---------- the single test routine ----------
+# Args: <runtime-key>
+# Stages:
+#   1. Bundle the fixture
+#   2. Move the bundle into an empty run directory (clean CWD)
+#   3. Run with deterministic args; capture stdout + exit code
+#   4. Compare stdout to expected.txt, exit code to 0
+run_case() {
+    local rt="$1"
+    local fdir; fdir="$(fixture_dir_for "$rt")"
+    local rflag; rflag="$(runtime_flag_for "$rt")"
+    local case_work="$WORK_DIR/$rt"
+    local bundle_out="$case_work/build/app"
+    local run_dir="$case_work/run"
+
+    log ""
+    log "── $rt ──"
+
+    if [[ ! -d "$fdir" ]]; then
+        fail "fixture missing: $fdir"
+        return 1
+    fi
+    if [[ ! -f "$fdir/expected.txt" ]]; then
+        fail "fixture missing expected.txt: $fdir/expected.txt"
+        return 1
+    fi
+    if ! host_runtime_for "$rt" >/dev/null; then
+        warn "host $rt runtime missing — current builders need it on the build host; skipping"
+        return 0
+    fi
+
+    mkdir -p "$case_work/build" "$run_dir"
+
+    # 1. bundle
+    info "bundling $fdir -> $bundle_out"
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --runtime="$rflag" \
+            --output="$bundle_out" \
+            >"$case_work/build.log" 2>&1; then
+        fail "ubuilder build failed (see $case_work/build.log)"
+        sed 's/^/    /' "$case_work/build.log" | tail -n 20
+        return 1
+    fi
+    if [[ ! -x "$bundle_out" ]]; then
+        fail "bundle missing or not executable: $bundle_out"
+        return 1
+    fi
+    ok "bundle built ($(du -h "$bundle_out" | cut -f1))"
+
+    # 2. move into empty run directory — CWD must not contain the fixture
+    cp "$bundle_out" "$run_dir/app"
+    chmod +x "$run_dir/app"
+
+    # 3. run
+    info "running bundle from $run_dir"
+    local stdout_path="$case_work/stdout.txt"
+    local stderr_path="$case_work/stderr.txt"
+    local exit_code=0
+    ( cd "$run_dir" && ./app harness-arg-1 harness-arg-2 ) \
+        >"$stdout_path" 2>"$stderr_path" || exit_code=$?
+
+    # 4. assert
+    local rc=0
+    if (( exit_code != 0 )); then
+        fail "exit code $exit_code (expected 0)"
+        sed 's/^/    [stderr] /' "$stderr_path" | tail -n 20
+        rc=1
+    fi
+
+    if ! diff -u "$fdir/expected.txt" "$stdout_path" >"$case_work/stdout.diff" 2>&1; then
+        fail "stdout differs from expected"
+        sed 's/^/    /' "$case_work/stdout.diff" | head -n 40
+        rc=1
+    fi
+
+    if (( rc == 0 )); then
+        ok "exit code 0 and stdout matches expected.txt"
+    fi
+    return $rc
+}
+
+# ---------- main ----------
+cleanup() {
+    if [[ "${UBUILDER_KEEP_ARTIFACTS:-0}" == "1" ]]; then
+        info "keeping artifacts under $WORK_DIR"
+    else
+        rm -rf "$WORK_DIR"
+    fi
+}
+trap cleanup EXIT
+
+info "repo:    $REPO_ROOT"
+info "build:   $BUILD_DIR"
+info "work:    $WORK_DIR"
+info "running: ${REQUESTED[*]}"
+
+ensure_ubuilder || exit 2
+
+failures=0
+for rt in "${REQUESTED[@]}"; do
+    case "$rt" in
+        python|php|nodejs) ;;
+        *) warn "unknown runtime '$rt' — skipping"; continue ;;
+    esac
+    run_case "$rt" || ((failures++))
+done
+
+log ""
+if (( failures == 0 )); then
+    log "${C_GRN}all bundle tests passed${C_RST}"
+    exit 0
+fi
+log "${C_RED}$failures bundle test(s) failed${C_RST}"
+(( failures > 125 )) && failures=125
+exit "$failures"

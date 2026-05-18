@@ -78,6 +78,11 @@ jobs:
             echo "Unit tests not found, skipping..."
           fi
 
+      - name: Run bundle integration tests
+        run: |
+          chmod +x tests/bundle/run-bundle-tests.sh
+          tests/bundle/run-bundle-tests.sh
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -356,6 +361,11 @@ jobs:
           else
             echo "Unit tests not found, skipping..."
           fi
+
+      - name: Run bundle integration tests
+        run: |
+          chmod +x tests/bundle/run-bundle-tests.sh
+          tests/bundle/run-bundle-tests.sh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
