@@ -6,9 +6,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Build configuration
-option(BUILD_TESTS "Build test suite" ON)
+option(BUILD_TESTS       "Build test suite" ON)
 option(ENABLE_COMPRESSION "Enable resource compression" ON)
-option(ENABLE_SIGNING "Enable code signing" OFF)
+option(ENABLE_SIGNING     "Enable code signing" OFF)
+# S8 (audit): statically link the ubuilder launcher so it does not depend on
+# the target host's libc at run time. Apple-sandbox rule: the CLI itself is
+# part of the surface that must be hermetic. Off by default to avoid breaking
+# distros that haven't installed glibc-static / musl. See
+# docs/architecture/STATIC_LAUNCHER.md for the trade-offs.
+option(UBUILDER_STATIC    "Statically link the ubuilder launcher (-static)" OFF)
 
 # Platform detection
 if(WIN32)

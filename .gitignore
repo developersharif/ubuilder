@@ -15,6 +15,8 @@ cmake_install.cmake
 CTestTestfile.cmake
 Makefile
 *.cmake
+# Keep checked-in cross-compile toolchain files (gitignore has no inline comments).
+!toolchains/*.cmake
 
 # ---------- Compiled binaries / objects ----------
 *.o

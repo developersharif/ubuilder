@@ -16,8 +16,10 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BUILD_DIR="$REPO_ROOT/build"
-UBUILDER_BIN="$BUILD_DIR/src/ubuilder"
+BUILD_DIR="${UBUILDER_BUILD_DIR:-$REPO_ROOT/build}"
+# Allow overriding the launcher under test — useful for the S8 static build,
+# CI artifacts, or any pre-built ubuilder you want to exercise.
+UBUILDER_BIN="${UBUILDER_BIN:-$BUILD_DIR/src/ubuilder}"
 FIXTURE_DIR="$SCRIPT_DIR/fixtures"
 WORK_DIR="$(mktemp -d -t ubuilder-bundle-tests.XXXXXX)"
 

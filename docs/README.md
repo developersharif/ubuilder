@@ -16,6 +16,7 @@ This directory contains comprehensive documentation for the Universal Executable
 ### Architecture
 - [Architecture Audit](architecture/ARCHITECTURE_AUDIT.md) — honest engineering review of the path to true 0-dependency executables (gaps, refactors, phasing)
 - [Config File Spec (`ubuilder.json`)](architecture/CONFIG_FILE_SPEC.md) — schema, discovery, and CLI/config precedence for the planned config-file loader
+- [Static Launcher (S8)](architecture/STATIC_LAUNCHER.md) — how to build the launcher with `-DUBUILDER_STATIC=ON` so it has zero shared-library deps, and the musl toolchain for hermetic distribution builds
 
 ### Guides
 - [Project Instructions](guides/project-instructions.md)

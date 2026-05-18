@@ -83,6 +83,26 @@ jobs:
           chmod +x tests/bundle/run-bundle-tests.sh
           tests/bundle/run-bundle-tests.sh
 
+      # S8 (audit): build a statically-linked launcher and re-run the bundle
+      # harness against it. Proves the launcher itself doesn't depend on the
+      # build host's libc. The bundles still embed a dynamic interpreter
+      # (M1 closes that), but the launcher gate is the first hermeticity test.
+      - name: Build static launcher (S8)
+        run: |
+          sudo apt-get install -y musl-tools || true
+          cmake -B build-static -S . \
+                -DUBUILDER_STATIC=ON \
+                -DENABLE_COMPRESSION=OFF \
+                -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-static -j --target ubuilder
+          file build-static/src/ubuilder
+          ldd build-static/src/ubuilder 2>&1 | grep -q 'not a dynamic' \
+            || (echo "::error::static launcher has dynamic deps" && ldd build-static/src/ubuilder && exit 1)
+
+      - name: Run bundle harness against static launcher (S8)
+        run: |
+          UBUILDER_BIN="$(pwd)/build-static/src/ubuilder" tests/bundle/run-bundle-tests.sh
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
