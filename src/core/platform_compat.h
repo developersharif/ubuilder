@@ -2,12 +2,13 @@
 #define UBUILDER_PLATFORM_COMPAT_H
 
 /*
- * Platform-compatibility shim. Hand-rolled today; the full S4 surface
- * (pc_temp_root, pc_mkdir_p, pc_executable_path, etc.) is planned. This
- * header only declares the pieces needed by S1 (audit §4.1): replacing
- * system() with structured spawn + a recursive remove that doesn't need
- * /bin/sh or `rm`/`rmdir.exe`.
+ * Platform-compatibility shim. The Apple-sandbox rule (see
+ * docs/architecture/ARCHITECTURE_AUDIT.md) is binding: every shell-out and
+ * popen() in UBuilder must route through this shim instead. After S1+S4+S5,
+ * the runtime *and* build paths are system()/popen()/`/bin/sh`-free.
  */
+
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,6 +54,42 @@ int pc_spawn_and_wait(const char* exe,
  */
 char** pc_env_overlay(char* const extra[]);
 void   pc_env_free(char** env);
+
+/*
+ * Recursively create the directory tree `path` (like `mkdir -p`). It is
+ * not an error if the path already exists as a directory. Returns 0 on
+ * success, -1 on failure (errno set on POSIX). Used to replace
+ * `system("mkdir …")` shell-outs and inherit the Apple-sandbox rule.
+ */
+int pc_mkdir_p(const char* path);
+
+/*
+ * Search the current process's PATH for an executable named `exe`. On
+ * POSIX this iterates $PATH split on ':' and tests access(p, X_OK). On
+ * Windows it iterates %PATH% split on ';' and tries common extensions
+ * (.exe / .cmd / .bat).
+ *
+ * Returns a heap-allocated absolute path (caller frees), or NULL if the
+ * binary is not on PATH or not executable. `exe` may also be an absolute
+ * path, in which case the function only checks that it exists.
+ *
+ * This replaces the popen("which X") / popen("where X") idiom.
+ */
+char* pc_path_lookup(const char* exe);
+
+/*
+ * Spawn `exe` with `argv`/`envp`/`cwd` like pc_spawn_and_wait, but capture
+ * the child's stdout into a heap-allocated, NUL-terminated buffer up to
+ * `max_bytes`. A trailing newline is stripped. Caller frees `*out` with
+ * free(). Returns the child's exit status (>= 0), or -1 on spawn / I/O
+ * failure with *out set to NULL. stderr is inherited.
+ */
+int pc_spawn_capture(const char* exe,
+                     char* const argv[],
+                     char* const envp[],
+                     const char* cwd,
+                     size_t      max_bytes,
+                     char**      out);
 
 #ifdef __cplusplus
 }

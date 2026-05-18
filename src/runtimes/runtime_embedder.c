@@ -1,4 +1,5 @@
 #include "runtime_embedder.h"
+#include "../core/platform_compat.h"
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -9,8 +10,6 @@
     #include <io.h>
     #include <direct.h>
     #include <process.h>  // For _access constants
-    #define popen _popen
-    #define pclose _pclose
     #define access _access
     #define mkdir(path, mode) _mkdir(path)
     #define readlink(path, buf, size) (-1)  // Not available on Windows
@@ -39,36 +38,32 @@
     #include <unistd.h>
 #endif
 
-// Function to execute a command and capture output
-static char* execute_command(const char* command) {
-    FILE* pipe = popen(command, "r");
-    if (!pipe) return NULL;
-    
-    char buffer[1024];
-    char* result = NULL;
-    size_t total_size = 0;
-    
-    while (fgets(buffer, sizeof(buffer), pipe)) {
-        size_t len = strlen(buffer);
-        char* new_result = realloc(result, total_size + len + 1);
-        if (!new_result) {
-            free(result);
-            pclose(pipe);
-            return NULL;
-        }
-        result = new_result;
-        strcpy(result + total_size, buffer);
-        total_size += len;
+/* S4/S5 (audit): the old `execute_command` was a popen() shell-out used to
+ * discover host runtimes (e.g. `which python3`, `python3 --version`). It
+ * violated the Apple-sandbox rule on two counts: shell invocation and
+ * host-tool probing.
+ *
+ * Replaced with structured calls:
+ *   - pc_path_lookup(exe)  — searches $PATH directly, no shell.
+ *   - pc_spawn_capture(...) — runs the binary via posix_spawn / CreateProcess
+ *                             with stdout piped, no shell quoting.
+ *
+ * Note: build-time host probing is still non-hermetic by nature; M1
+ * (vendored hermetic interpreters) is the real fix. These helpers are
+ * a stopgap that at least removes the /bin/sh dependency. */
+
+static char* capture_version(const char* exe) {
+    char* out = NULL;
+    char* argv[] = { (char*)exe, (char*)"--version", NULL };
+    int rc = pc_spawn_capture(exe, argv, NULL, NULL, 1024, &out);
+    if (rc != 0 || !out) {
+        free(out);
+        return NULL;
     }
-    
-    pclose(pipe);
-    
-    // Remove trailing newline
-    if (result && total_size > 0 && result[total_size - 1] == '\n') {
-        result[total_size - 1] = '\0';
-    }
-    
-    return result;
+    /* Trim to the first line so we don't carry a multi-line PHP banner. */
+    char* nl = strchr(out, '\n');
+    if (nl) *nl = 0;
+    return out;
 }
 
 // Function to get file size
@@ -142,96 +137,70 @@ static char* resolve_binary_path(const char* path) {
     return resolved_path;
 }
 
-// Function to detect and get runtime information
+/* Detect a host runtime binary by name. Build-time only (build is non-
+ * hermetic until M1 lands); the runtime path never reaches this. */
 ub_result_t ub_detect_runtime_binary(ub_runtime_type_t runtime, ub_runtime_info_t* info) {
     if (!info) return UB_ERROR_INVALID_ARGS;
-    
     memset(info, 0, sizeof(ub_runtime_info_t));
-    
-    const char* which_cmd;
-    const char* version_cmd;
+
     const char* binary_name;
-    
+    /* Candidates to probe on PATH, in priority order. */
+    const char* candidates[3];
+    int         ncand = 0;
+
     switch (runtime) {
         case UB_RUNTIME_PHP:
-#ifdef PLATFORM_WINDOWS
-            // On Windows, PHP requires multiple files: php.exe + php8ts.dll + dependencies
-            // First get the PHP directory from php.exe path
-            which_cmd = "php -r \"echo PHP_BINARY;\"";
-            version_cmd = "php --version";
-#else
-            which_cmd = "which php";
-            version_cmd = "php --version | head -1";
-#endif
-            binary_name = "php";
+            binary_name   = "php";
+            candidates[ncand++] = "php";
             break;
         case UB_RUNTIME_PYTHON:
-#ifdef PLATFORM_WINDOWS
-            // On Windows, try multiple approaches to find Python
-            which_cmd = "python -c \"import sys; print(sys.executable)\"";
-            version_cmd = "python --version";
-#else
-            which_cmd = "which python3";
-            version_cmd = "python3 --version";
-#endif
-            binary_name = "python";
+            binary_name   = "python";
+            candidates[ncand++] = "python3";
+            candidates[ncand++] = "python";
             break;
         case UB_RUNTIME_NODEJS:
-#ifdef PLATFORM_WINDOWS
-            // On Windows, get the actual Node.js executable path
-            which_cmd = "node -p \"process.execPath\"";
-            version_cmd = "node --version";
-#else
-            which_cmd = "which node";
-            version_cmd = "node --version";
-#endif
-            binary_name = "node";
+            binary_name   = "node";
+            candidates[ncand++] = "node";
             break;
         default:
             return UB_ERROR_RUNTIME_NOT_FOUND;
     }
-    
-    // Find binary path
-    char* binary_path = execute_command(which_cmd);
-    if (!binary_path) {
-        return UB_ERROR_RUNTIME_NOT_FOUND;
+
+    char* binary_path = NULL;
+    for (int i = 0; i < ncand; i++) {
+        binary_path = pc_path_lookup(candidates[i]);
+        if (binary_path) break;
     }
-    
-    // Resolve symlinks to get actual binary
+    if (!binary_path) return UB_ERROR_RUNTIME_NOT_FOUND;
+
+    /* Resolve symlinks so we embed the actual binary, not the link. */
     char* resolved_path = resolve_binary_path(binary_path);
     free(binary_path);
-    
-    if (!resolved_path) {
-        return UB_ERROR_RUNTIME_NOT_FOUND;
-    }
-    
-    // Check if binary exists and is executable
+    if (!resolved_path) return UB_ERROR_RUNTIME_NOT_FOUND;
+
 #ifdef PLATFORM_WINDOWS
-    if (access(resolved_path, 0) != 0) {  // Check if file exists on Windows
+    if (access(resolved_path, 0) != 0) {
 #else
     if (access(resolved_path, X_OK) != 0) {
 #endif
         free(resolved_path);
         return UB_ERROR_RUNTIME_NOT_FOUND;
     }
-    
-    // Get version info
-    char* version = execute_command(version_cmd);
-    
-    // Get binary size
+
+    /* Best-effort version banner — not load-bearing, used only for logging. */
+    char* version = capture_version(resolved_path);
+
     size_t size = get_file_size(resolved_path);
     if (size == 0) {
         free(resolved_path);
         free(version);
         return UB_ERROR_FILE_NOT_FOUND;
     }
-    
-    // Fill info structure
-    info->binary_path = resolved_path;
-    info->binary_name = strdup(binary_name);
-    info->binary_size = size;
+
+    info->binary_path    = resolved_path;
+    info->binary_name    = strdup(binary_name);
+    info->binary_size    = size;
     info->version_string = version;
-    
     return UB_SUCCESS;
 }
 
@@ -543,20 +512,18 @@ ub_result_t ub_extract_windows_php_runtime(FILE* input_file, const char* temp_di
         char* last_slash = strrchr(dir_path, '\\');
         if (last_slash && last_slash != dir_path) {
             *last_slash = '\0';
-            // Create directory recursively 
-            char mkdir_cmd[1024];
-            snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir \"%s\" 2>nul", dir_path);
-            system(mkdir_cmd);
+            (void)pc_mkdir_p(dir_path);   /* best-effort; fopen below will fail loudly if not creatable */
         }
         free(dir_path);
-        
+
         // Extract file
         FILE* output_file = fopen(full_path, "wb");
         if (!output_file) {
             free(filename);
             return UB_ERROR_EXTRACTION_FAILED;
         }
-        
+
+
         char buffer[8192];
         uint32_t remaining = file_size;
         while (remaining > 0) {
@@ -684,12 +651,9 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
     
     snprintf(cache_dir, sizeof(cache_dir), "%s\\PythonRuntime", cache_root);
     
-    // Create cache directories
-    char cache_mkdir_cmd[1024];
-    snprintf(cache_mkdir_cmd, sizeof(cache_mkdir_cmd), "mkdir \"%s\" 2>nul", cache_root);
-    system(cache_mkdir_cmd);
-    snprintf(cache_mkdir_cmd, sizeof(cache_mkdir_cmd), "mkdir \"%s\" 2>nul", cache_dir);
-    system(cache_mkdir_cmd);
+    /* Create cache directories (structured — no shell). */
+    (void)pc_mkdir_p(cache_root);
+    (void)pc_mkdir_p(cache_dir);
     
     // Check if cache is already populated (quick check for python.exe)
     char python_exe_check[1024];
@@ -772,10 +736,7 @@ ub_result_t ub_extract_windows_python_runtime(FILE* input_file, const char* temp
         char* last_slash = strrchr(dir_path, '\\');
         if (last_slash && last_slash != dir_path) {
             *last_slash = '\0';
-            // Create directory recursively 
-            char extract_mkdir_cmd[1024];
-            snprintf(extract_mkdir_cmd, sizeof(extract_mkdir_cmd), "mkdir \"%s\" 2>nul", dir_path);
-            system(extract_mkdir_cmd);
+            (void)pc_mkdir_p(dir_path);
         }
         free(dir_path);
         

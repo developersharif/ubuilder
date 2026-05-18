@@ -1,5 +1,6 @@
 #include "runtime_builder.h"
 #include "runtime_embedder.h"
+#include "../core/platform_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,8 +12,6 @@
     #define PATH_MAX MAX_PATH
     #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
     #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
-    #define popen _popen
-    #define pclose _pclose
 #else
     #include <dirent.h>
     #include <unistd.h>
@@ -438,18 +437,30 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
     char ext_dir[1024];
     
 #ifdef PLATFORM_WINDOWS
-    // On Windows, try to get extension directory from registry or use default
-    strcpy(ext_dir, "C:\\php\\ext");  // Default Windows PHP extension path
+    /* On Windows, default to the conventional PHP install layout. */
+    strcpy(ext_dir, "C:\\php\\ext");
 #else
-    FILE* php_config = popen("php-config --extension-dir 2>/dev/null", "r");
-    if (php_config && fgets(ext_dir, sizeof(ext_dir), php_config)) {
-        // Remove newline
-        ext_dir[strcspn(ext_dir, "\n")] = 0;
-        pclose(php_config);
-    } else {
-        if (php_config) pclose(php_config);
-        // Fallback to common paths
+    /* S5 (audit): no popen("php-config …"). Locate php-config on PATH and
+     * spawn it directly; on failure, fall back to a conventional path with
+     * a verbose note. M1 (hermetic bundled PHP) supersedes this entirely. */
+    ext_dir[0] = 0;
+    char* php_config_exe = pc_path_lookup("php-config");
+    if (php_config_exe) {
+        char* argv[] = { php_config_exe, (char*)"--extension-dir", NULL };
+        char* out    = NULL;
+        int   rc     = pc_spawn_capture(php_config_exe, argv, NULL, NULL, 1024, &out);
+        if (rc == 0 && out && *out) {
+            strncpy(ext_dir, out, sizeof(ext_dir) - 1);
+            ext_dir[sizeof(ext_dir) - 1] = 0;
+        }
+        free(out);
+        free(php_config_exe);
+    }
+    if (!ext_dir[0]) {
         strcpy(ext_dir, "/usr/lib/php/20240924");
+        fprintf(stderr,
+                "note: php-config not found on PATH; falling back to %s.\n",
+                ext_dir);
     }
 #endif
     

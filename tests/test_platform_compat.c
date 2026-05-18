@@ -102,6 +102,65 @@ static void test_env_overlay(void) {
     pc_env_free(env);
 }
 
+static void test_mkdir_p(void) {
+    char base[256];
+    snprintf(base, sizeof(base), "/tmp/ubuilder-mkdir-p.%d/a/b/c", (int)getpid());
+    pc_remove_tree(base); /* paranoia */
+
+    int rc = pc_mkdir_p(base);
+    EXPECT("mkdir_p: creates nested tree", rc == 0 && path_exists(base));
+
+    /* Idempotent. */
+    rc = pc_mkdir_p(base);
+    EXPECT("mkdir_p: succeeds when path already exists", rc == 0);
+
+    /* Cleanup. */
+    char root[256];
+    snprintf(root, sizeof(root), "/tmp/ubuilder-mkdir-p.%d", (int)getpid());
+    pc_remove_tree(root);
+}
+
+static void test_path_lookup(void) {
+    /* /bin/sh is essentially universal on Linux/macOS; the test runs there. */
+    char* p = pc_path_lookup("sh");
+    EXPECT("path_lookup: finds 'sh' on PATH", p != NULL);
+    free(p);
+
+    /* Absolute path that exists. */
+    p = pc_path_lookup("/bin/true");
+    EXPECT("path_lookup: accepts absolute path that exists", p != NULL);
+    free(p);
+
+    /* Absolute path that doesn't exist. */
+    p = pc_path_lookup("/no/such/binary/here");
+    EXPECT("path_lookup: rejects absolute path that doesn't exist", p == NULL);
+
+    /* Name that isn't on PATH. */
+    p = pc_path_lookup("ubuilder-no-such-binary-xyz-12345");
+    EXPECT("path_lookup: returns NULL for unknown name", p == NULL);
+}
+
+static void test_spawn_capture(void) {
+    /* echo on POSIX is generally /bin/echo or a shell builtin; use printf
+     * through a known path for determinism. /bin/echo prints "hi\n" → we
+     * strip the newline and expect "hi". */
+    char* out = NULL;
+    char* argv[] = { (char*)"echo", (char*)"hi", NULL };
+    int rc = pc_spawn_capture("/bin/echo", argv, NULL, NULL, 64, &out);
+    EXPECT("spawn_capture: /bin/echo exit 0",      rc == 0);
+    EXPECT("spawn_capture: captures stdout 'hi'",  out && strcmp(out, "hi") == 0);
+    free(out);
+
+    /* Truncation: ask for max_bytes=2 from echo abcdef → we expect "ab"
+     * (and pipe closes; child may report broken-pipe but we don't care
+     * about exit code semantics here, just that out is bounded). */
+    char* argv2[] = { (char*)"echo", (char*)"abcdef", NULL };
+    rc = pc_spawn_capture("/bin/echo", argv2, NULL, NULL, 2, &out);
+    EXPECT("spawn_capture: truncates output to max_bytes",
+           out && strlen(out) <= 2);
+    free(out);
+}
+
 void test_platform_compat(void) {
     printf("\nPlatform compatibility shim tests\n");
     printf("---------------------------------\n");
@@ -109,4 +168,7 @@ void test_platform_compat(void) {
     test_spawn_basic();
     test_spawn_missing();
     test_env_overlay();
+    test_mkdir_p();
+    test_path_lookup();
+    test_spawn_capture();
 }
