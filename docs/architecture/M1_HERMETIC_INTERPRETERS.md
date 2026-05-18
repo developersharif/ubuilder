@@ -1,6 +1,6 @@
 # M1 — Hermetic Interpreters
 
-**Status:** ✅ Python + Node end-to-end (M1-A plumbing + M1-B/E tree embed/extract). Hermetic Python (185 MB) and Node (186 MB) bundles both pass the `PATH=/nonexistent` test in the harness. PHP builder accepts `--runtime-source=<binary>` (M1-D plumbing done) but no upstream pre-built static PHP exists — `static-php-cli` is the documented self-build path. Tier-3 Docker test (M1-C) is the natural next step.
+**Status:** ✅ Python + Node end-to-end + **Tier-3 Docker test passes** (M1-A/B/C/E). Hermetic bundles run inside `debian:12-slim` with no Python/Node installed anywhere — the strongest possible proof of zero-host-dependency. PHP builder accepts `--runtime-source=<binary>` (M1-D plumbing done) but no upstream pre-built static PHP exists — `static-php-cli` is the documented self-build path; PHP excluded from Tier-3 until that lands.
 **Companion to:** `ARCHITECTURE_AUDIT.md` (this implements M1).
 **Goal:** UBuilder bundles stop depending on the build host's `/usr/bin/python3` (etc.). The bundle's interpreter is a vendored, redistributable build whose ABI is independent of whatever ran the build.
 
@@ -81,16 +81,37 @@ The launcher extracts the tree to `<temp>/<bundle-pid>/runtime/<original-tree-la
 
 Cache reuse (M5) is deferred: today's launcher still extracts per-PID. M5 will move this to a content-addressed `~/.cache/ubuilder/runtimes-extracted/<sha256-of-tree>/` so 10 bundles built from the same vendored Python share one extracted copy.
 
-## Tier-3 hermeticity test (M1-C, next commit)
+## Tier-3 hermeticity test (M1-C, ✅ shipped)
 
-Once the build path is wired, the harness gains a third tier:
+`tests/bundle/run-tier3.sh` builds a hermetic bundle, ships it into an
+empty container, runs it, and checks the output. Three isolation backends
+are tried in this order:
 
-```bash
-# Tier 3: bundle runs in an Alpine container with NO Python installed.
-docker run --rm -v $(pwd):/work alpine /work/dist/my-app
+1. **Docker** — preferred in CI. Uses `debian:12-slim` (glibc, no Python /
+   Node / PHP preinstalled). To bypass Docker Desktop's restrictive File
+   Sharing list, the bundle is streamed into the container via `stdin`
+   (no bind mount, no `docker cp` — both require sharing the source path).
+   A tiny `/bin/sh -c` wrapper inside the container writes the bytes to
+   `/tmp/bundle`, chmods +x, and execs against the test argv.
+2. **Bubblewrap (`bwrap`)** — preferred for local dev. Bind-mounts `/lib`,
+   `/lib64`, `/usr/lib` read-only (so the launcher's dynamic linker
+   works), presents an empty `/usr/bin`, `/bin`, `/sbin`, `/usr/local/bin`
+   via tmpfs overlay, sets `PATH=/no/such/path`, and runs the bundle.
+   No daemon needed; ~100 ms vs Docker's seconds.
+3. **PATH-strip fallback** — same as the standard harness. Used only when
+   neither Docker nor bwrap is available; explicitly logged as a weaker
+   proof.
+
+Force a backend with `UBUILDER_TIER3_MODE=docker|bwrap|path-strip`.
+
+**Current local result** (Docker Desktop + bwrap):
+```
+✓ python (Tier-3 via docker) — runs in debian:12-slim (no host runtimes)
+✓ nodejs (Tier-3 via docker) — runs in debian:12-slim (no host runtimes)
+✓ python (Tier-3 via bwrap)  — runs in bwrap sandbox (empty /usr/bin)
 ```
 
-If the bundle still runs, it's genuinely 0-dependency. If not, we've learned something concrete about what's still leaking from the build host.
+CI wires Docker mode after the static-launcher harness.
 
 ## What this commit does (M1-A + M1-B-Python)
 

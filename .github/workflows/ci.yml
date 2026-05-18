@@ -103,6 +103,20 @@ jobs:
         run: |
           UBUILDER_BIN="$(pwd)/build-static/src/ubuilder" tests/bundle/run-bundle-tests.sh
 
+      # M1-C (audit §4.2): Tier-3 hermeticity test. Vendor hermetic Python
+      # and Node interpreters, build bundles, then run them inside
+      # debian:12-slim (no Python/Node installed anywhere) to prove the
+      # bundles really are zero-dependency.
+      - name: Vendor hermetic runtimes (M1)
+        run: |
+          chmod +x scripts/vendor-runtimes.sh
+          scripts/vendor-runtimes.sh python node
+
+      - name: Run Tier-3 Docker hermeticity test (M1-C)
+        run: |
+          chmod +x tests/bundle/run-tier3.sh
+          UBUILDER_TIER3_MODE=docker tests/bundle/run-tier3.sh
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
