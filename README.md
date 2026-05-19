@@ -10,10 +10,15 @@ without Python, Node, PHP, `pip install`, or `npm install`.
 [![Windows](https://img.shields.io/badge/Windows-supported-success.svg)]()
 
 The bundle contains your app, an interpreter, and every third-party
-dependency. At startup it verifies a SHA-256 over the payload, extracts
-to a temp directory, and execs the embedded interpreter. The build
-machine doesn't need a global Python/Node/PHP install either: the first
-run downloads pinned interpreter tarballs into a local cache.
+dependency. At startup the bundle verifies a SHA-256 over its own
+payload, extracts to a temp directory, and execs the embedded
+interpreter. End users never touch the network; the bundle is
+self-contained.
+
+The **build machine** doesn't need Python / Node / PHP installed
+globally either. The first time you run `ubuilder` it downloads pinned
+interpreter tarballs into `~/.cache/ubuilder/runtimes/` and embeds them
+into every bundle you produce. Subsequent builds reuse the cache.
 
 ```bash
 cd my-app/                   # contains main.py + (optional) requirements.txt
