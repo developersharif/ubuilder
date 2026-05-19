@@ -117,6 +117,222 @@ static int php_parse_composer_extensions(const char* project_dir, php_ext_list_t
     return 0;
 }
 
+/* Load-order priority for `name` — lower numbers load first. PHP requires
+ * certain extensions to be loaded BEFORE the ones that depend on them
+ * (pdo before pdo_mysql, mysqlnd before mysqli, etc.) and emits opaque
+ * `undefined symbol` startup warnings otherwise. Debian's conf.d uses a
+ * filename-prefix priority scheme (10-mysqlnd.ini before 20-mysqli.ini);
+ * we replicate the same ordering inside our single generated ini. The
+ * default priority (50) covers everything not explicitly ranked. */
+static int php_extension_load_priority(const char* name) {
+    /* Tier 10 — foundational, must come before their dependents. */
+    if (strcmp(name, "pdo") == 0)        return 10;
+    if (strcmp(name, "mysqlnd") == 0)    return 10;
+    if (strcmp(name, "xml") == 0)        return 10;
+    if (strcmp(name, "json") == 0)       return 10;
+    if (strcmp(name, "ctype") == 0)      return 10;
+    if (strcmp(name, "iconv") == 0)      return 10;
+    if (strcmp(name, "phar") == 0)       return 10;
+    if (strcmp(name, "tokenizer") == 0)  return 10;
+    if (strcmp(name, "session") == 0)    return 10;
+
+    /* Tier 20 — first-degree dependents (pdo_*, mysqli, dom-family). */
+    if (strcmp(name, "mysqli") == 0)     return 20;
+    if (strcmp(name, "pdo_mysql") == 0)  return 20;
+    if (strcmp(name, "pdo_pgsql") == 0)  return 20;
+    if (strcmp(name, "pdo_sqlite") == 0) return 20;
+    if (strcmp(name, "pdo_odbc") == 0)   return 20;
+    if (strcmp(name, "pdo_dblib") == 0)  return 20;
+    if (strcmp(name, "pdo_firebird") == 0) return 20;
+    if (strcmp(name, "dom") == 0)        return 20;
+    if (strcmp(name, "simplexml") == 0)  return 20;
+    if (strcmp(name, "xmlreader") == 0)  return 20;
+    if (strcmp(name, "xmlwriter") == 0)  return 20;
+    if (strcmp(name, "wddx") == 0)       return 20;
+
+    /* Tier 30 — second-degree (depends on tier-20 like dom). */
+    if (strcmp(name, "xsl") == 0)        return 30;
+    if (strcmp(name, "soap") == 0)       return 30;
+
+    return 50;
+}
+
+/* Return non-zero if `name` is a Zend extension (loaded via zend_extension=)
+ * rather than a regular extension (extension=). Zend extensions hook into
+ * the engine differently and PHP throws a warning if you load them with
+ * the wrong directive. The list below covers everything we've seen on
+ * Debian/RHEL/Arch in 2025-2026. */
+static int php_is_zend_extension(const char* name) {
+    static const char* zend_exts[] = {
+        "opcache", "xdebug", "tideways", "tideways_xhprof",
+        "ioncube_loader", "ioncube_loader_lin", "blackfire",
+        "datadog-profiling", "ddtrace", "newrelic", "snuffleupagus",
+        NULL
+    };
+    for (size_t i = 0; zend_exts[i]; i++) {
+        if (strcmp(name, zend_exts[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Scan the host's extension_dir and return every <name>.so found, with the
+ * `.so` suffix stripped. Output is alphabetized for deterministic builds.
+ * Caller frees with php_ext_list_free. Returns 0 on success, -1 on I/O. */
+static int php_list_host_extensions(const char* ext_dir, php_ext_list_t* out) {
+    out->names = NULL;
+    out->count = 0;
+
+    DIR* dir = opendir(ext_dir);
+    if (!dir) return -1;
+
+    /* Two-pass: count first to size the allocation, then fill. */
+    size_t cap = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        const char* name = entry->d_name;
+        const char* dot = strrchr(name, '.');
+        if (dot && strcmp(dot, ".so") == 0 && dot != name) cap++;
+    }
+    rewinddir(dir);
+
+    if (cap == 0) { closedir(dir); return 0; }
+    out->names = (char**)calloc(cap, sizeof(char*));
+    if (!out->names) { closedir(dir); return -1; }
+
+    while ((entry = readdir(dir)) != NULL) {
+        const char* name = entry->d_name;
+        const char* dot = strrchr(name, '.');
+        if (!dot || strcmp(dot, ".so") != 0 || dot == name) continue;
+        size_t n = (size_t)(dot - name);
+        char* dup = (char*)malloc(n + 1);
+        if (!dup) { php_ext_list_free(out); closedir(dir); return -1; }
+        memcpy(dup, name, n);
+        dup[n] = 0;
+        out->names[out->count++] = dup;
+    }
+    closedir(dir);
+
+    /* Sort alphabetically so the generated ini and embedded files have a
+     * stable order across machines/builds (helps with content-addressed
+     * caching downstream). qsort with a pointer-to-string comparator. */
+    if (out->count > 1) {
+        /* Simple insertion sort — count is small (~50 typical). */
+        for (size_t i = 1; i < out->count; i++) {
+            char* key = out->names[i];
+            size_t j = i;
+            while (j > 0 && strcmp(out->names[j - 1], key) > 0) {
+                out->names[j] = out->names[j - 1];
+                j--;
+            }
+            out->names[j] = key;
+        }
+    }
+    return 0;
+}
+
+/* Probe `<php_bin> --ini` and extract the two paths we need from its output:
+ *   Loaded Configuration File:         /etc/php/8.4/cli/php.ini
+ *   Scan for additional .ini files in: /etc/php/8.4/cli/conf.d
+ * Either field may be "(none)" — we leave the corresponding out-buffer
+ * empty in that case. Returns 0 always (best-effort; missing values are
+ * a soft condition, handled by the caller). */
+static int php_probe_ini_paths(const char* php_bin,
+                               char* main_ini, size_t main_cap,
+                               char* scan_dir, size_t scan_cap) {
+    if (main_cap) main_ini[0] = 0;
+    if (scan_cap) scan_dir[0] = 0;
+
+    char* argv[] = { (char*)php_bin, (char*)"--ini", NULL };
+    char* captured = NULL;
+    if (pc_spawn_capture(php_bin, argv, NULL, NULL, 16384, &captured) != 0 || !captured) {
+        free(captured);
+        return 0;
+    }
+
+    /* Tokenize on newlines and look for the two leading labels. */
+    char* save = NULL;
+    for (char* line = strtok_r(captured, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        const char* labels[2] = {
+            "Loaded Configuration File:",
+            "Scan for additional .ini files in:"
+        };
+        char* outs[2] = { main_ini, scan_dir };
+        size_t caps[2] = { main_cap, scan_cap };
+
+        for (int i = 0; i < 2; i++) {
+            char* hit = strstr(line, labels[i]);
+            if (!hit || outs[i][0]) continue;   /* only first hit wins */
+            char* p = hit + strlen(labels[i]);
+            while (*p == ' ' || *p == '\t') p++;
+            char* end = p + strlen(p);
+            while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
+            *end = 0;
+            if (strcmp(p, "(none)") != 0 && strlen(p) < caps[i] && caps[i] > 0) {
+                memcpy(outs[i], p, strlen(p) + 1);
+            }
+        }
+    }
+    free(captured);
+    return 0;
+}
+
+/* Copy every <name>.ini from src_dir into dst_dir, FOLLOWING symlinks
+ * (Debian's conf.d entries are symlinks into mods-available/). Skip files
+ * whose stripped extension name matches the user's exclude list — keeps
+ * us from loading an extension the user just dropped. Returns the count
+ * of files copied; -1 on a hard error. */
+static int php_copy_host_confd(const char* src_dir, const char* dst_dir,
+                               char* const* exclude_pats, size_t exclude_count) {
+    if (pc_mkdir_p(dst_dir) != 0) return -1;
+    DIR* d = opendir(src_dir);
+    if (!d) return 0;   /* host has no conf.d — fine, nothing to copy. */
+
+    int copied = 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        const char* name = e->d_name;
+        size_t name_len = strlen(name);
+        if (name_len < 4 || strcmp(name + name_len - 4, ".ini") != 0) continue;
+        if (name[0] == '.') continue;
+
+        /* Derive the bare extension name by stripping a leading "<digits>-"
+         * priority prefix and the trailing ".ini". Use it to honor the
+         * --exclude list (so we don't keep a conf.d that loads an ext we
+         * just dropped). E.g. "20-mbstring.ini" → "mbstring". */
+        const char* ext_start = name;
+        while (*ext_start >= '0' && *ext_start <= '9') ext_start++;
+        if (*ext_start == '-') ext_start++;
+        size_t ext_len = (name_len - 4) - (size_t)(ext_start - name);
+        if (ext_len > 0 && ext_len < 128 && exclude_pats && exclude_count > 0) {
+            char ext_name[128];
+            memcpy(ext_name, ext_start, ext_len);
+            ext_name[ext_len] = 0;
+            if (ub_ext_excluded((const char* const*)exclude_pats, exclude_count, ext_name)) {
+                continue;
+            }
+        }
+
+        char src[1280], dst[1280];
+        snprintf(src, sizeof(src), "%s/%s", src_dir, name);
+        snprintf(dst, sizeof(dst), "%s/%s", dst_dir, name);
+
+        FILE* fi = fopen(src, "rb");   /* fopen follows symlinks */
+        if (!fi) continue;
+        FILE* fo = fopen(dst, "wb");
+        if (!fo) { fclose(fi); continue; }
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), fi)) > 0) {
+            if (fwrite(buf, 1, n, fo) != n) break;
+        }
+        fclose(fi);
+        fclose(fo);
+        copied++;
+    }
+    closedir(d);
+    return copied;
+}
+
 /* Probe `<php_bin> -r 'echo ini_get("extension_dir");'`. Returns 0 / -1. */
 static int php_probe_extension_dir(const char* php_bin, char* out, size_t out_cap) {
     char* argv[] = {
@@ -135,50 +351,54 @@ static int php_probe_extension_dir(const char* php_bin, char* out, size_t out_ca
     return 0;
 }
 
-/* Write a php.ini with reasonable defaults + extension=<name> lines.
- * Path resolution is handled by the launcher passing -d extension_dir=
- * at spawn time, so we don't bake a path into the ini. */
+/* Write a tiny ubuilder-overrides snippet into conf.d/. This file is
+ * loaded LAST by PHP (high-priority suffix) so its values take precedence
+ * over whatever the host's main php.ini and conf.d/* set. Keep it small:
+ * only the settings we need to FORCE for bundled-CLI semantics. Settings
+ * the host already had (memory_limit, error_reporting, timezone, etc.)
+ * stay as the user configured them in the host php.ini we copied. */
 static int php_write_default_ini(const char* ini_path,
                                  const php_ext_list_t* exts) {
+    (void)exts;   /* The extension list is now driven by conf.d/<prio>-<ext>.ini
+                     files copied from the host; we no longer enumerate it here. */
     FILE* f = fopen(ini_path, "w");
     if (!f) return -1;
     fprintf(f,
-        "; ubuilder-generated php.ini\n"
-        "; Tuned for bundled CLI / web-server / FFI-GUI workloads.\n"
+        "; ubuilder runtime overrides (loaded last so the values below win)\n"
+        "; Edit/remove individual lines or pass --exclude=ext-<name> to drop\n"
+        "; specific extensions; the rest of the host's php.ini is preserved\n"
+        "; verbatim in the sibling conf.d/* files we copied.\n"
         "\n"
-        "memory_limit = 256M\n"
-        "max_execution_time = 0\n"
-        "error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT\n"
-        "display_errors = stderr\n"
-        "log_errors = On\n"
-        "date.timezone = UTC\n"
+        "; FFI: PHP 8+ defaults to ffi.enable=preload, which disables FFI\n"
+        "; in CLI mode unless opcache.preload is also configured. Bundles\n"
+        "; run as standalone CLI processes (no preload step), so we force\n"
+        "; ffi.enable=true here. Harmless when ffi.so isn't loaded.\n"
+        "ffi.enable = true\n"
         "\n"
-        "; OPcache: on for CLI long-running scripts (e.g. PHP servers,\n"
-        "; FFI/GUI event loops). Disable file timestamp checks since\n"
-        "; bundled files are immutable.\n"
-        "opcache.enable = 1\n"
+        "; OPcache: bundled files are immutable, so we skip the per-file\n"
+        "; stat() on every request. Saves a few ms on startup.\n"
         "opcache.enable_cli = 1\n"
         "opcache.validate_timestamps = 0\n"
         "\n"
-        "; Phar: ubuilder bundles run from a temp dir; users may want\n"
-        "; to load .phar archives. Enabled.\n"
-        "phar.readonly = 0\n"
-        "\n");
-
-    if (exts->count > 0) {
-        fprintf(f, "; extensions declared in composer.json's require.ext-*\n");
-        for (size_t i = 0; i < exts->count; i++) {
-            fprintf(f, "extension=%s\n", exts->names[i]);
-        }
-    }
+        "; Phar: bundles may legitimately want to load .phar archives.\n"
+        "phar.readonly = 0\n");
     fclose(f);
     return 0;
 }
 
 /* Compose a synthetic runtime tree at `stage_dir` containing:
- *   bin/php          (hardlink/copy of host php)
- *   bin/php.ini      (generated)
- *   ext/<name>.so    (hardlink/copy from host extension_dir)
+ *   bin/php                                (hardlink/copy of host php)
+ *   bin/php.ini                            (copy of host's loaded php.ini)
+ *   bin/conf.d/<host-conf.d-files>.ini     (copied from host, ext exclude applied)
+ *   bin/conf.d/99-ubuilder-overrides.ini   (ffi.enable=true + opcache tweaks)
+ *   ext/<name>.so                          (hardlink/copy from host extension_dir)
+ *
+ * Rationale: rather than guess at extension load order or hand-curate a
+ * synthetic ini, we copy the host's actual config verbatim. The host's
+ * conf.d/<NN>-<ext>.ini fragments encode the right load order via their
+ * numeric prefixes (10-mysqlnd before 20-mysqli, etc.). Our 99- override
+ * file loads dead last, so its values win for the few things we need to
+ * force (ffi.enable, opcache.validate_timestamps, phar.readonly).
  *
  * Returns UB_SUCCESS on success; the caller embeds via
  * ub_embed_runtime_tree(stage_dir) and removes `stage_dir` afterwards.
@@ -186,12 +406,14 @@ static int php_write_default_ini(const char* ini_path,
 static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
                                                const char* ext_dir_host,
                                                const php_ext_list_t* exts,
+                                               const ub_config_t* config,
                                                const char* stage_dir) {
     char p[1024];
 
     pc_remove_tree(stage_dir);
-    snprintf(p, sizeof(p), "%s/bin", stage_dir); if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
-    snprintf(p, sizeof(p), "%s/ext", stage_dir); if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
+    snprintf(p, sizeof(p), "%s/bin", stage_dir);        if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
+    snprintf(p, sizeof(p), "%s/bin/conf.d", stage_dir); if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
+    snprintf(p, sizeof(p), "%s/ext", stage_dir);        if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
 
     /* bin/php — hardlink-or-copy from the host. */
     snprintf(p, sizeof(p), "%s/bin/php", stage_dir);
@@ -201,8 +423,53 @@ static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
     }
     chmod(p, 0755);
 
-    /* bin/php.ini — generated. */
+    /* bin/php.ini + bin/conf.d/* — copy the host's actual config so we
+     * inherit memory_limit / error_reporting / timezone / extension load
+     * order without having to guess any of it. */
+    char host_main_ini[1024] = {0};
+    char host_scan_dir[1024] = {0};
+    php_probe_ini_paths(php_bin, host_main_ini, sizeof(host_main_ini),
+                        host_scan_dir, sizeof(host_scan_dir));
+
     snprintf(p, sizeof(p), "%s/bin/php.ini", stage_dir);
+    if (host_main_ini[0]) {
+        FILE* fi = fopen(host_main_ini, "rb");
+        FILE* fo = fopen(p, "wb");
+        if (!fi || !fo) {
+            if (fi) fclose(fi);
+            if (fo) fclose(fo);
+            fprintf(stderr, "Error: failed to copy host php.ini (%s -> %s)\n",
+                    host_main_ini, p);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), fi)) > 0) {
+            if (fwrite(buf, 1, n, fo) != n) {
+                fclose(fi); fclose(fo);
+                fprintf(stderr, "Error: short write copying host php.ini\n");
+                return UB_ERROR_EXTRACTION_FAILED;
+            }
+        }
+        fclose(fi); fclose(fo);
+    } else {
+        /* Host didn't have a php.ini at all — write an empty placeholder so
+         * the launcher's `-c <ini>` argument resolves. */
+        FILE* fo = fopen(p, "w");
+        if (fo) { fprintf(fo, "; (host had no php.ini; see conf.d/ for ubuilder overrides)\n"); fclose(fo); }
+    }
+
+    /* Copy host conf.d → bin/conf.d, dropping fragments for --excluded exts. */
+    char confd_dir[1024];
+    snprintf(confd_dir, sizeof(confd_dir), "%s/bin/conf.d", stage_dir);
+    if (host_scan_dir[0]) {
+        php_copy_host_confd(host_scan_dir, confd_dir,
+                            config ? config->exclude       : NULL,
+                            config ? config->exclude_count : 0);
+    }
+
+    /* High-priority ubuilder override file (loaded last). */
+    snprintf(p, sizeof(p), "%s/99-ubuilder-overrides.ini", confd_dir);
     if (php_write_default_ini(p, exts) != 0) {
         fprintf(stderr, "Error: failed to write %s\n", p);
         return UB_ERROR_EXTRACTION_FAILED;
@@ -306,16 +573,65 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
     }
     printf("Host PHP: %s\n  extension_dir: %s\n", php_bin, ext_dir_host);
 
+    /* DEFAULT BUNDLING POLICY: copy ALL .so files from the host's
+     * extension_dir, then drop anything the user listed in `exclude`.
+     * Rationale: an FFI / GUI app needs ext-ffi at runtime even when
+     * composer.json doesn't mention it, and asking every user to list
+     * every transitively-needed extension in composer.json is bad DX.
+     * The user can `--exclude=ext-<name>` to drop noisy or oversized
+     * extensions they don't want shipping. */
     php_ext_list_t exts = {0};
-    int parsed = php_parse_composer_extensions(config ? config->project_dir : ".", &exts);
-    if (parsed != 0) {
+    if (php_list_host_extensions(ext_dir_host, &exts) != 0) {
+        fprintf(stderr, "Error: could not enumerate host extension_dir %s\n", ext_dir_host);
         free(php_bin);
+        return UB_ERROR_RUNTIME_NOT_FOUND;
+    }
+
+    /* Composer.json's `require.ext-*` is still meaningful for two things:
+     *   - emitting a clear "install php-X" hint when the user declares an
+     *     extension that the host doesn't ship
+     *   - feeding --ignore-platform-req= flags to `composer install` for
+     *     extensions the user explicitly --excluded
+     * Parse it once here so both can use it. */
+    php_ext_list_t declared = {0};
+    if (php_parse_composer_extensions(config ? config->project_dir : ".", &declared) != 0) {
+        free(php_bin);
+        php_ext_list_free(&exts);
         return UB_ERROR_INVALID_ARGS;
     }
 
-    /* Apply --exclude / exclude:[...] to the parsed ext list. Excluded
-     * entries are reported and dropped before staging so the user sees
-     * exactly which extensions won't ship. */
+    /* Cross-check declared vs host: any declared ext that's NOT on the
+     * host AND not in the exclude list is a real build-blocker — emit the
+     * apt/dnf install hint and abort. */
+    int missing = 0;
+    for (size_t i = 0; i < declared.count; i++) {
+        const char* dname = declared.names[i];
+        if (config && ub_ext_excluded((const char* const*)config->exclude,
+                                      config->exclude_count, dname)) continue;
+        int found = 0;
+        for (size_t j = 0; j < exts.count; j++) {
+            if (strcmp(exts.names[j], dname) == 0) { found = 1; break; }
+        }
+        if (!found) {
+            fprintf(stderr,
+                    "Error: composer.json declares ext-%s but no %s/%s.so found in host extension_dir.\n"
+                    "       On Debian/Ubuntu: sudo apt install php-%s\n"
+                    "       On RHEL/Fedora:   sudo dnf install php-%s\n",
+                    dname, ext_dir_host, dname, dname, dname);
+            missing++;
+        }
+    }
+    php_ext_list_free(&declared);
+    if (missing > 0) {
+        free(php_bin);
+        php_ext_list_free(&exts);
+        return UB_ERROR_RUNTIME_NOT_FOUND;
+    }
+
+    /* Apply --exclude / exclude:[...] to the host-scanned list. Per-name
+     * lines are always printed (the user explicitly asked for these to be
+     * dropped — they want confirmation it took effect). The bulk "+ <ext>"
+     * list of bundled extensions is only printed under --verbose. */
     if (config && config->exclude_count > 0 && exts.count > 0) {
         size_t write = 0;
         for (size_t i = 0; i < exts.count; i++) {
@@ -331,10 +647,10 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         exts.count = write;
     }
 
-    if (exts.count > 0) {
-        printf("composer.json declares %zu PHP extension%s:\n",
-               exts.count, exts.count == 1 ? "" : "s");
-        for (size_t i = 0; i < exts.count; i++) printf("  - %s\n", exts.names[i]);
+    printf("Bundling %zu host PHP extension%s from %s\n",
+           exts.count, exts.count == 1 ? "" : "s", ext_dir_host);
+    if (config && config->verbose) {
+        for (size_t i = 0; i < exts.count; i++) printf("  + %s\n", exts.names[i]);
     }
 
     /* Stage under XDG cache so hardlinks work. */
@@ -345,7 +661,7 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
     else if (home && *home) snprintf(stage, sizeof(stage), "%s/.cache/ubuilder/stage/php-rt-%d", home, (int)getpid());
     else                    snprintf(stage, sizeof(stage), "/tmp/ubuilder-php-rt-%d",                  (int)getpid());
 
-    result = php_stage_synthetic_runtime(php_bin, ext_dir_host, &exts, stage);
+    result = php_stage_synthetic_runtime(php_bin, ext_dir_host, &exts, config, stage);
     free(php_bin);
     php_ext_list_free(&exts);
     if (result != UB_SUCCESS) {

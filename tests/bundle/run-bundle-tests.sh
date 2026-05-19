@@ -833,16 +833,23 @@ run_m1d_php_exclude_ext_case() {
         sed 's/^/    /' "$cw/build.log" | tail -n 15
         return 1
     fi
-    if ! grep -q "ubuilder_intentionally_missing (excluded by config; not staged)" "$cw/build.log"; then
-        fail "build log missing the 'excluded by config' notice"
+    # Two paths into the exclude pipeline:
+    #   (a) ext exists on host → host-scan picks it up → exclude loop drops
+    #       it with a per-name "(excluded by config; not staged)" line.
+    #   (b) ext does NOT exist on host (this fixture) → host-scan never
+    #       includes it, so the per-name line never fires. The signal that
+    #       the exclude worked here is composer install receiving the
+    #       --ignore-platform-req flag we built up below the cross-check.
+    if ! grep -q "passing --ignore-platform-req=ext-ubuilder_intentionally_missing" "$cw/build.log"; then
+        fail "build log missing the --ignore-platform-req flag for the excluded ext"
         sed 's/^/    /' "$cw/build.log" | tail -n 15
         return 1
     fi
     if grep -q "composer.json declares ext-ubuilder_intentionally_missing but no" "$cw/build.log"; then
-        fail "exclude did not run before the missing-ext check"
+        fail "exclude did not run before the missing-ext cross-check"
         return 1
     fi
-    ok "build succeeds with --exclude; staging skips the absent ext entirely"
+    ok "build succeeds with --exclude; declared-but-absent ext is suppressed at composer install"
     return 0
 }
 

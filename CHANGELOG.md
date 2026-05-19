@@ -5,7 +5,40 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] - 2026-05-19
+
+### Fixed
+
+- **PHP bundle entry-point picked the wrong file.** The launcher's PHP entry-point selector only preferred `main.php`. For any project using the equally-conventional `index.php` (or `bootstrap.php`, etc.), it picked whichever `.php` file extracted first alphabetically — for filemanager-phpgui that was `src/Icons.php`, a class file with no top-level code, so the bundle launched, ran an empty file, and exited 0 silently. Verified via `strace -e execve`: `execve(.../bin/php, [..., "Icons.php"], ...)`. New selection order: `main.php` → root-level `index.php` → first `.php` file as fallback. (`src/core/ubuilder.c`)
+- **FFI silently disabled inside the bundle.** PHP 8+ defaults to `ffi.enable=preload`, which disables FFI in CLI mode unless `opcache.preload` is configured — bundles run as standalone CLI processes (no preload step), so FFI calls were silently no-op'd. Generated `99-ubuilder-overrides.ini` now forces `ffi.enable=true`. Required for any FFI-driven app (php-gui, php-tk, swoole, etc.) to actually function.
+
+### Changed
+
+- **PHP bundling switched to "copy host's actual config".** v2.1.1 generated a synthetic `php.ini` with a hand-curated extension load-order priority table — guessing which extensions Debian/RHEL/Arch load first. v2.1.2 instead copies the host's loaded `php.ini` verbatim into the bundle and copies every `<NN>-<ext>.ini` fragment from the host's `conf.d/` (following symlinks into `mods-available/`). The numeric prefixes in those fragments encode the right load order (10-mysqlnd before 20-mysqli, 15-xml before 20-dom, etc.), so no guessing.
+  - New `php_probe_ini_paths()` runs `php --ini` and parses the two paths.
+  - New `php_copy_host_confd()` follows symlinks and skips fragments for `--excluded` extensions.
+  - New `99-ubuilder-overrides.ini` placed at high priority in the bundle's `conf.d/` to force `ffi.enable=true`, `opcache.validate_timestamps=0`, and `phar.readonly=0` without touching the user's other settings.
+  - Launcher sets `PHP_INI_SCAN_DIR=<runtime_dir>/conf.d` so PHP auto-loads the copied fragments in priority order.
+- **PHP extension bundling is now "copy ALL host extensions by default".** Same intent as v2.1.1's late change, but cleaner: the host's `conf.d/<NN>-<ext>.ini` fragments are what activates each `extension=<name>` line, so we just copy them along with every `.so` from the host's `extension_dir`. The user's `--exclude=ext-<name>` drops both the `.so` and the corresponding conf.d fragment so PHP doesn't try to load it.
+- The synthetic-runtime build log shows the per-extension `+ <name>` list only under `--verbose`; non-verbose mode prints a single `Bundling N host PHP extensions from <dir>` summary line.
+
+### Test coverage
+
+- `tests/test_php_builder.c` updated to assert the new overrides snippet (only `ffi.enable`, `opcache.validate_timestamps=0`, `phar.readonly=0`; no enumerated `extension=` lines, no `memory_limit` — those come from the copied host php.ini now).
+- `tests/bundle/run-bundle-tests.sh` — `php-exclude-ext` assertion switched from per-name "(excluded by config; not staged)" log line (only fires when the extension is on host) to the `passing --ignore-platform-req=ext-<name>` line that composer install receives (fires regardless).
+- All 184 unit assertions + 13 bundle cases passing on Ubuntu 25.10.
+
 ## [2.1.1] - 2026-05-19
+
+### Changed
+
+- **PHP bundling policy: copy ALL host extensions by default; `--exclude` drops specific ones.** v2.1.0 only bundled extensions explicitly listed in `composer.json`'s `require.ext-*`, which broke real-world apps that load extensions at runtime without declaring them in composer (FFI-driven GUI apps, ondemand-loaded `mysqli`, etc.). New behavior:
+  - `php_embed_runtime` scans the host's `extension_dir` and bundles every `.so` it finds.
+  - `composer.json`'s `require.ext-*` is now informational: it drives the "missing ext-X — install php-X" diagnostic (preserves the existing user-friendly error) and feeds `--ignore-platform-req=ext-X` flags to `composer install` when those exts are excluded.
+  - The `exclude` config / `--exclude` CLI flag drops specific extensions from both the bundle copy and the auto-load list. Excluded names are echoed per-line so users see the drop took effect.
+  - Generated `php.ini` now emits **dependency-ordered** `extension=` / `zend_extension=` lines: `mysqlnd` before `mysqli`, `pdo` before `pdo_*`, `xml` before `dom`/`simplexml`, etc. Mirrors Debian's `conf.d/<priority>-<ext>.ini` ordering and silences the `undefined symbol: mysqlnd_global_stats`-style startup warnings.
+  - Generated ini also sets `ffi.enable = true` (PHP 8+ defaults to `preload` which disables FFI in CLI mode). Required for FFI-based GUI / interop apps to actually function inside a standalone bundle. Harmless when `ext-ffi` isn't loaded.
+  - Bundle size grows from ~6 MB to ~90 MB on a typical Debian host with ~38 extensions installed. Users who want lean bundles can `--exclude=<noisy-ext>` for the ones they don't need.
 
 ### Added
 

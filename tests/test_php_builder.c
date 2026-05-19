@@ -145,41 +145,48 @@ static void test_parse_composer_extensions(void) {
     pc_remove_tree(dir);
 }
 
-/* ---- php_write_default_ini ------------------------------------------ */
+/* ---- php_write_default_ini (now writes the conf.d overrides snippet) -- */
 
 static void test_write_default_ini(void) {
+    /* As of v2.1.2 this function emits a small overrides file that goes
+     * into the bundled conf.d/ with a high-priority "99-" name. The host's
+     * actual php.ini and the host's conf.d/* fragments are now copied
+     * verbatim into the bundle, so this file no longer carries memory_limit,
+     * extension= lines, or any of the prior synthetic-default stanzas. It
+     * exists to FORCE three things that need to win over whatever the host
+     * had: ffi.enable (preload→true), opcache.validate_timestamps (1→0),
+     * and phar.readonly (1→0). */
     char dir[256];
     snprintf(dir, sizeof(dir), "/tmp/ubuilder-php-ini-test.%d", (int)getpid());
     pc_remove_tree(dir);
     EXPECT("ini: mkdir scratch", mkdir(dir, 0755) == 0);
 
     char ini[512];
-    snprintf(ini, sizeof(ini), "%s/php.ini", dir);
+    snprintf(ini, sizeof(ini), "%s/99-ubuilder-overrides.ini", dir);
 
-    /* Empty extension list — header lines present, no extension= lines. */
-    {
-        php_ext_list_t empty = {0};
-        EXPECT("ini: write succeeds (empty)", php_write_default_ini(ini, &empty) == 0);
-        EXPECT("ini: opcache.enable line",    file_contains(ini, "opcache.enable = 1"));
-        EXPECT("ini: opcache.enable_cli line",file_contains(ini, "opcache.enable_cli = 1"));
-        EXPECT("ini: phar.readonly = 0 line", file_contains(ini, "phar.readonly = 0"));
-        EXPECT("ini: memory_limit line",      file_contains(ini, "memory_limit"));
-        EXPECT("ini: no extension= line",     !file_contains(ini, "extension="));
-    }
+    php_ext_list_t empty = {0};
+    EXPECT("ini: write succeeds",                php_write_default_ini(ini, &empty) == 0);
+    EXPECT("ini: ffi.enable = true override",    file_contains(ini, "ffi.enable = true"));
+    EXPECT("ini: opcache.enable_cli override",   file_contains(ini, "opcache.enable_cli = 1"));
+    EXPECT("ini: opcache.validate_timestamps=0", file_contains(ini, "opcache.validate_timestamps = 0"));
+    EXPECT("ini: phar.readonly = 0 override",    file_contains(ini, "phar.readonly = 0"));
+    /* The overrides snippet must NOT enumerate extensions — those come
+     * from the conf.d/*.ini fragments copied from the host. */
+    EXPECT("ini: no extension= line",            !file_contains(ini, "extension="));
+    EXPECT("ini: no memory_limit line",          !file_contains(ini, "memory_limit"));
 
-    /* Populated extension list — one extension= line per name. */
-    {
-        php_ext_list_t exts = {0};
-        exts.names = (char**)calloc(2, sizeof(char*));
-        exts.names[0] = strdup("mbstring");
-        exts.names[1] = strdup("curl");
-        exts.count = 2;
-
-        EXPECT("ini: write succeeds (with exts)", php_write_default_ini(ini, &exts) == 0);
-        EXPECT("ini: extension=mbstring line",     file_contains(ini, "extension=mbstring"));
-        EXPECT("ini: extension=curl line",         file_contains(ini, "extension=curl"));
-        php_ext_list_free(&exts);
-    }
+    /* The function ignores the ext list now; passing a populated one
+     * should still succeed and still produce no extension= lines. */
+    php_ext_list_t with_exts = {0};
+    with_exts.names = (char**)calloc(2, sizeof(char*));
+    with_exts.names[0] = strdup("mbstring");
+    with_exts.names[1] = strdup("curl");
+    with_exts.count = 2;
+    EXPECT("ini: write succeeds (ext list ignored)",
+           php_write_default_ini(ini, &with_exts) == 0);
+    EXPECT("ini: still no extension= line",
+           !file_contains(ini, "extension=mbstring"));
+    php_ext_list_free(&with_exts);
 
     pc_remove_tree(dir);
 }

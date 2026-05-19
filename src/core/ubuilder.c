@@ -543,8 +543,20 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime,
 #endif
         extra_env[ei++] = pythonpath;
     } else if (runtime == UB_RUNTIME_PHP) {
-        /* Empty PHP_INI_SCAN_DIR isolates from host extension scan. */
-        extra_env[ei++] = (char*)"PHP_INI_SCAN_DIR=";
+        /* M1-D synthetic-tree layout: <tree>/bin/php, <tree>/bin/conf.d/.
+         * Point PHP_INI_SCAN_DIR at our bundled conf.d so the host
+         * fragments we copied (10-mysqlnd.ini, 20-mbstring.ini, …, and
+         * our 99-ubuilder-overrides.ini) are auto-loaded in priority
+         * order. runtime_dir here is <tree>/bin. */
+        static char php_scan_env[2200];
+#ifdef PLATFORM_WINDOWS
+        snprintf(php_scan_env, sizeof(php_scan_env),
+                 "PHP_INI_SCAN_DIR=%s\\conf.d", runtime_dir);
+#else
+        snprintf(php_scan_env, sizeof(php_scan_env),
+                 "PHP_INI_SCAN_DIR=%s/conf.d", runtime_dir);
+#endif
+        extra_env[ei++] = php_scan_env;
     }
     extra_env[ei] = NULL;
 
@@ -977,12 +989,27 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
         }
         fclose(output_file);
         
-        // Remember main.php specifically, or the first PHP file as fallback
+        // Entry-point selection: prefer main.php, then index.php (only at
+        // the project root, not nested), then any other .php file as a
+        // fallback. Matches PHP convention — without the index.php tier,
+        // a project laid out like {index.php, src/Icons.php, ...} would
+        // pick src/Icons.php (whichever extracts first) and silently run
+        // the wrong file. Validated by the filemanager-phpgui repro.
         if (runtime == UB_RUNTIME_PHP) {
             const char* ext = strrchr(rel_path, '.');
             if (ext && strcmp(ext, ".php") == 0) {
-                // Prefer main.php over other files
-                if (strstr(rel_path, "main.php") != NULL || strlen(first_php_file) == 0) {
+                /* `rel_path` looks like "main.php" or "src/Icons.php" or
+                 * "index.php". A leading-slash test is a portable proxy
+                 * for "this is at the bundle root, not in a subdir". */
+                int is_root_level = (strchr(rel_path, '/') == NULL &&
+                                     strchr(rel_path, '\\') == NULL);
+
+                /* main.php always wins; same for an existing main.php
+                 * entry we already locked in earlier in the walk. */
+                if (strcmp(rel_path, "main.php") == 0 ||
+                    (is_root_level && strstr(first_php_file, "main.php") == NULL &&
+                     strcmp(rel_path, "index.php") == 0) ||
+                    strlen(first_php_file) == 0) {
                     strcpy(first_php_file, full_path);
                 }
             }
