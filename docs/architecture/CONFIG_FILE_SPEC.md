@@ -1,8 +1,11 @@
 # UBuilder Config File Spec — `ubuilder.json`
 
 **Status:** Implemented (v1). Core schema + discovery + CLI/config precedence shipped.
-Honored keys: `schema_version`, `runtime`, `entry_point`, `output`, `name` (as output default), `verbose`, `gui`, `compression`.
-Parsed-but-not-yet-honored: `include`, `exclude`, `runtime_options`, `build.*`.
+Honored keys: `schema_version`, `runtime`, `entry_point`, `output`, `name` (as output default),
+`verbose`, `gui`, `compression`, `exclude`, `runtime_options.<rt>.{source,use_host}`.
+Parsed-but-not-yet-honored: `include`, `build.*`.
+Auto-write: a successful build with no `ubuilder.json` in `--project-dir` writes one capturing
+the resolved runtime, entry_point, name, and exclude list. Subsequent builds reuse it.
 **Companion to:** `ARCHITECTURE_AUDIT.md` (this is the deliverable for §4.1 "missing" — config-file ergonomics).
 **Motivation:** Repeatedly typing
 `ubuilder --project-dir=./myapp --runtime=python --entry-point=src/cli.py --output=dist/myapp --verbose`
@@ -98,8 +101,8 @@ Everything else has a default (see §3.3).
 | `runtime` | enum | required | Matches existing `ub_parse_runtime()` values. |
 | `entry_point` | string | required | Resolved relative to the config file's dir. |
 | `output` | string | `./<name>` (or `./<name>.exe` on Windows) | Absolute or relative to CWD (not config dir — match shell intuition). |
-| `include` | string[] | `["**/*"]` | Glob patterns matched relative to the config file's dir. |
-| `exclude` | string[] | sensible defaults: `["**/.git/**", "**/node_modules/**", "**/__pycache__/**", "**/*.pyc"]` | Applied after `include`. |
+| `include` | string[] | `["**/*"]` | Glob patterns matched relative to the config file's dir. Parsed but not honored yet — every file in the project dir is embedded unless dropped by `exclude`. |
+| `exclude` | string[] | `[]` | Three categories, all applied: (a) file/dir glob patterns skipped during app embed (`*`, `**`, `?`, `[abc]`, `[a-z]`, `[!abc]`, leading-`/` anchor, trailing-`/` dir-only); (b) PHP `ext-<name>` (or bare `<name>`) drops the entry from the composer-declared extension list AND passes `--ignore-platform-req=ext-<name>` to `composer install`; (c) Python wheel name (PEP-503-normalized) filters `requirements.txt` before pip runs; (d) Node module name removes the key from `dependencies`/`devDependencies`/`optionalDependencies`/`peerDependencies` of the staged `package.json` (lockfile is dropped if anything changed). Excluded deps invalidate the install-cache key, so cache hits stay correct across exclude changes. |
 | `verbose` | bool | `false` | |
 | `gui` | bool | `false` | Honored only after audit §4.2 M7 lands; warn-and-ignore today. |
 | `compression` | bool | `true` if `ENABLE_COMPRESSION` was on at build time, else `false` | |
@@ -128,9 +131,14 @@ For every CLI flag that has a config equivalent: **CLI wins**. Specifically:
 | `--entry-point`, `-e` | `entry_point` |
 | `--gui`, `-g` | `gui` |
 | `--verbose`, `-v` | `verbose` |
+| `--runtime-source <path>` | `runtime_options.<rt>.source` |
+| `--use-host-runtime` | `runtime_options.<rt>.use_host` |
+| `--no-install-deps` | (no config equivalent yet) |
+| `--no-auto-vendor` | (no config equivalent yet) |
+| `--exclude <pat>` (repeatable) | `exclude` (CLI entries **append** to the config array; the only "merging" exception — every other flag overrides) |
 | `--config <path>` | (selects the file) |
 
-There is no CLI form for `include`/`exclude`/`runtime_options` in v1 — those are config-only. (A `--include`/`--exclude` flag pair can be added later if demand exists; until then, config is the canonical path for include/exclude.)
+There is no CLI form for `include`/`runtime_options.<rt>.{version,extensions,…}` in v1 — those are config-only.
 
 ## 4. Implementation plan
 
@@ -216,7 +224,7 @@ No new external CMake `find_package` calls. No new compile flags.
 - **`extends`**: `{"extends": "../base.ubuilder.json"}` for monorepos. Deferred — easy to add, no demand yet.
 - **Env interpolation**: `"output": "dist/myapp-${VERSION}"`. Deferred; users can wrap with a shell script today.
 - **Per-target overrides**: `targets.linux.x86_64`, `targets.windows.x86_64`. Deferred until audit M1 (hermetic interpreters per platform/arch) lands.
-- **`--init` subcommand**: `ubuilder --init python` writes a starter `ubuilder.json`. Small, friendly, but additive — defer until v1 ships.
+- ~~**`--init` subcommand**: `ubuilder --init python` writes a starter `ubuilder.json`.~~ Superseded: a successful build with no `ubuilder.json` auto-writes one (`ub_config_write_if_missing` in `src/core/config.c`). A future explicit `--init` could still be useful for projects that want to seed `ubuilder.json` without running a build.
 - **Lockfile**: `ubuilder.lock` capturing interpreter SHA-256 for reproducibility. Deferred until audit M3/M5 (versioned container + content-addressed cache).
 
 ## 7. Acceptance criteria for v1

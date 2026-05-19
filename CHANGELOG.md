@@ -5,6 +5,27 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-05-19
+
+### Added
+
+- **`exclude` config field + repeatable `--exclude` CLI flag**, applied across all three runtimes:
+  - **App-file globs** (`tests/**`, `*.md`, `[!a-z]*.tmp`, …) skipped during the recursive embed step for Python, PHP, and Node bundles. Supports `*`, `**`, `?`, `[abc]`, `[a-z]`, `[!abc]`, leading-`/` anchor, trailing-`/` dir-only, and backslash normalization.
+  - **PHP `ext-<name>`** drops the entry from the composer-declared extension list before staging and passes `--ignore-platform-req=ext-<name>` to `composer install` so platform-req checks don't abort.
+  - **Python wheel name** (PEP-503-normalized) filters `requirements.txt` line-by-line into a staged `.ubuilder.filtered-requirements.txt` before `pip install` runs.
+  - **Node module name** removes the key from `dependencies` / `devDependencies` / `optionalDependencies` / `peerDependencies` of the staged `package.json` (re-emitted JSON, `unlink`-before-rewrite to break hardlink sharing with the user's source); staged `package-lock.json` is dropped if anything changed so `npm install` is used instead of `npm ci`.
+  - CLI entries append to the config array; everything else still overrides.
+  - Excluded deps invalidate the install-cache key, so cache hits stay correct.
+- **Auto-write `ubuilder.json` on first build**: a successful build with no `ubuilder.json` writes one capturing `runtime`, `entry_point`, `name`, and `exclude`. Subsequent builds reuse it; no overwrite on later runs.
+- **PHP M1-D (host-bits hermetic)**: synthesizes a runtime tree from the host's `/usr/bin/php` plus `composer.json`'s `require.ext-*` entries; runs `composer install --no-dev` in a staged project, with content-addressed install-cache for cache hits on the second build.
+- **Glob matcher** (`src/core/glob_match.{c,h}`): a small portable subset of git's wildmatch.
+
+### Tests
+
+- New unit suites for glob matching (`tests/test_glob_match.c`, 39 assertions) and PHP builder internals (`tests/test_php_builder.c`, 26 assertions).
+- New bundle cases: `python-with-exclude`, `nodejs-with-exclude`, `php-with-deps`, `php-missing-ext`, `php-exclude-ext`, `php-autoconfig`.
+- Total: 184 unit assertions + 13 end-to-end bundle cases passing.
+
 ## [2.0.1] - 2025-06-25
 
 ### Fixed

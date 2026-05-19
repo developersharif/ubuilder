@@ -39,8 +39,17 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
 // Global state
 static int g_initialized = 0;
 
-// Version string
-static const char* VERSION_STRING = "2.0.1";
+/* Version string — derived from UBUILDER_VERSION_{MAJOR,MINOR,PATCH} in
+ * ubuilder.h so create-release.sh only has to bump three macros, not
+ * search-and-replace hardcoded literals across the tree. */
+#define UB_STR_(x) #x
+#define UB_STR(x)  UB_STR_(x)
+static const char* VERSION_STRING =
+    UB_STR(UBUILDER_VERSION_MAJOR) "."
+    UB_STR(UBUILDER_VERSION_MINOR) "."
+    UB_STR(UBUILDER_VERSION_PATCH);
+#undef UB_STR
+#undef UB_STR_
 
 // Platform names
 static const char* PLATFORM_NAMES[] = {

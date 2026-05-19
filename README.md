@@ -84,8 +84,9 @@ The zero-flag path is the default. You only need these for non-default cases:
 | `--config <path>` | Use an explicit `ubuilder.json` |
 | `--runtime-source <path>` | Use a specific vendored interpreter tree (skips cache discovery) |
 | `--use-host-runtime` | Explicit opt-in to the host's interpreter — produces a **non-portable** bundle. Useful for fast local iteration |
-| `--no-install-deps` | Skip `pip install` / `npm install` step |
+| `--no-install-deps` | Skip `pip install` / `npm install` / `composer install` step |
 | `--no-auto-vendor` | Don't auto-spawn `scripts/vendor-runtimes.sh` on cache miss |
+| `--exclude <pat>` (repeatable) | Drop files/deps from the bundle: file glob (`tests/**`, `*.md`), PHP `ext-curl`, Python wheel name (`six`), or Node module name (`is-number`). Appends to `exclude` in `ubuilder.json`. |
 | `--verbose` / `-v` | Show every spawned subprocess |
 
 Run `ubuilder --help` for the canonical list.
@@ -99,6 +100,7 @@ Run `ubuilder --help` for the canonical list.
   "name": "my-app",
   "runtime": "python",
   "entry_point": "main.py",
+  "exclude": ["tests/**", "*.md", "six"],
   "build": { "compression": true, "gui": false },
   "runtime_options": {
     "python": { "source": "...", "use_host": false, "no_install_deps": false }
@@ -106,7 +108,12 @@ Run `ubuilder --help` for the canonical list.
 }
 ```
 
-CLI flags override config keys. Full schema: [`docs/architecture/CONFIG_FILE_SPEC.md`](docs/architecture/CONFIG_FILE_SPEC.md).
+CLI flags override config keys (one exception: `--exclude` **appends** to `exclude`).
+A successful build with no `ubuilder.json` writes one automatically — capturing the
+resolved `runtime`, `entry_point`, `name`, and `exclude` so the next `ubuilder` run
+needs no flags.
+
+Full schema: [`docs/architecture/CONFIG_FILE_SPEC.md`](docs/architecture/CONFIG_FILE_SPEC.md).
 
 ---
 
@@ -118,8 +125,8 @@ Most users should install a release binary. To build the tool itself:
 mkdir -p build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . -j
-./tests/test_ubuilder                       # 101/101 unit tests
-../tests/bundle/run-bundle-tests.sh         # 7/7 end-to-end bundle cases
+./tests/test_ubuilder                       # 184/184 unit tests
+../tests/bundle/run-bundle-tests.sh         # 13/13 end-to-end bundle cases
 ../tests/bundle/run-tier3.sh                # 2/2 hermetic Docker isolation cases
 ```
 

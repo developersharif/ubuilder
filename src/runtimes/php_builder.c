@@ -20,7 +20,6 @@
 #endif
 
 // Forward declarations
-static ub_result_t php_embed_extensions(FILE* output_file);
 #ifdef PLATFORM_WINDOWS
 static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_file);
 #endif
@@ -391,6 +390,7 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
 #endif
 }
 
+#ifdef PLATFORM_WINDOWS
 // Function to embed complete Windows PHP runtime
 // Helper function to check if extension is enabled in php.ini
 static int is_extension_enabled_in_ini(const char* php_ini_path, const char* ext_name) {
@@ -454,7 +454,6 @@ static int is_builtin_extension(const char* ext_name) {
     return 0;
 }
 
-#ifdef PLATFORM_WINDOWS
 static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_file) {
     // Essential files needed for PHP to run on Windows
     const char* essential_files[] = {
@@ -717,150 +716,7 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
 }
 #endif
 
-// Function to embed essential PHP extensions
-static ub_result_t php_embed_extensions(FILE* output_file) {
-    // Get PHP extension directory using php-config or default path
-    char ext_dir[1024];
-    
-#ifdef PLATFORM_WINDOWS
-    /* On Windows, default to the conventional PHP install layout. */
-    strcpy(ext_dir, "C:\\php\\ext");
-#else
-    /* S5 (audit): no popen("php-config …"). Locate php-config on PATH and
-     * spawn it directly; on failure, fall back to a conventional path with
-     * a verbose note. M1 (hermetic bundled PHP) supersedes this entirely. */
-    ext_dir[0] = 0;
-    char* php_config_exe = pc_path_lookup("php-config");
-    if (php_config_exe) {
-        char* argv[] = { php_config_exe, (char*)"--extension-dir", NULL };
-        char* out    = NULL;
-        int   rc     = pc_spawn_capture(php_config_exe, argv, NULL, NULL, 1024, &out);
-        if (rc == 0 && out && *out) {
-            strncpy(ext_dir, out, sizeof(ext_dir) - 1);
-            ext_dir[sizeof(ext_dir) - 1] = 0;
-        }
-        free(out);
-        free(php_config_exe);
-    }
-    if (!ext_dir[0]) {
-        strcpy(ext_dir, "/usr/lib/php/20240924");
-        fprintf(stderr,
-                "note: php-config not found on PATH; falling back to %s.\n",
-                ext_dir);
-    }
-#endif
-    
-#ifdef PLATFORM_WINDOWS
-    printf("Embedding ALL available PHP extensions from: %s (for future use)\n", ext_dir);
-#else
-    printf("Embedding ALL available PHP extensions from: %s (for future use)\n", ext_dir);
-#endif
-    
-    // Write marker for extension section
-    const char* ext_marker = "PHP_EXTENSIONS_START";
-    uint32_t marker_len = (uint32_t)strlen(ext_marker);
-    fwrite(&marker_len, sizeof(marker_len), 1, output_file);
-    fwrite(ext_marker, 1, marker_len, output_file);
-    
-    int extensions_embedded = 0;
-    
-    // Scan extension directory and embed ALL extension files
-    // They will be available but not automatically loaded to prevent conflicts
-#ifdef PLATFORM_WINDOWS
-    // On Windows, scan for .dll files in ext directory
-    WIN32_FIND_DATAA find_data;
-    HANDLE find_handle;
-    char search_path[1024];
-    
-    snprintf(search_path, sizeof(search_path), "%s\\*.dll", ext_dir);
-    find_handle = FindFirstFileA(search_path, &find_data);
-    
-    if (find_handle != INVALID_HANDLE_VALUE) {
-        do {
-            char ext_path[1024];
-            snprintf(ext_path, sizeof(ext_path), "%s\\%s", ext_dir, find_data.cFileName);
-            
-            struct stat st;
-            if (stat(ext_path, &st) == 0) {
-                FILE* ext_file = fopen(ext_path, "rb");
-                if (ext_file) {
-                    printf("  Embedding extension: %s (%.2f KB)\n", 
-                           find_data.cFileName, st.st_size / 1024.0);
-                    
-                    // Write extension filename length and name
-                    uint32_t name_len = (uint32_t)strlen(find_data.cFileName);
-                    fwrite(&name_len, sizeof(name_len), 1, output_file);
-                    fwrite(find_data.cFileName, 1, name_len, output_file);
-                    
-                    // Write extension file size
-                    uint32_t ext_size = st.st_size;
-                    fwrite(&ext_size, sizeof(ext_size), 1, output_file);
-                    
-                    // Write extension content
-                    char buffer[8192];
-                    size_t bytes_read;
-                    while ((bytes_read = fread(buffer, 1, sizeof(buffer), ext_file)) > 0) {
-                        fwrite(buffer, 1, bytes_read, output_file);
-                    }
-                    
-                    fclose(ext_file);
-                    extensions_embedded++;
-                }
-            }
-        } while (FindNextFileA(find_handle, &find_data));
-        FindClose(find_handle);
-    }
-#else
-    // On Unix-like systems, scan for .so files
-    DIR* dir = opendir(ext_dir);
-    if (dir) {
-        struct dirent* entry;
-        while ((entry = readdir(dir)) != NULL) {
-            // Only process .so files
-            if (strstr(entry->d_name, ".so") && strlen(entry->d_name) > 3) {
-                char ext_path[1024];
-                snprintf(ext_path, sizeof(ext_path), "%s/%s", ext_dir, entry->d_name);
-                
-                struct stat st;
-                if (stat(ext_path, &st) == 0 && S_ISREG(st.st_mode)) {
-                    FILE* ext_file = fopen(ext_path, "rb");
-                    if (ext_file) {
-                        printf("  Embedding extension: %s (%.2f KB)\n", 
-                               entry->d_name, st.st_size / 1024.0);
-                        
-                        // Write extension filename length and name
-                        uint32_t name_len = (uint32_t)strlen(entry->d_name);
-                        fwrite(&name_len, sizeof(name_len), 1, output_file);
-                        fwrite(entry->d_name, 1, name_len, output_file);
-                        
-                        // Write extension file size
-                        uint32_t ext_size = st.st_size;
-                        fwrite(&ext_size, sizeof(ext_size), 1, output_file);
-                        
-                        // Write extension content
-                        char buffer[8192];
-                        size_t bytes_read;
-                        while ((bytes_read = fread(buffer, 1, sizeof(buffer), ext_file)) > 0) {
-                            fwrite(buffer, 1, bytes_read, output_file);
-                        }
-                        
-                        fclose(ext_file);
-                        extensions_embedded++;
-                    }
-                }
-            }
-        }
-        closedir(dir);
-    }
-#endif
-    
-    // Write end marker (empty name)
-    uint32_t end_marker = 0;
-    fwrite(&end_marker, sizeof(end_marker), 1, output_file);
-    
-    printf("Embedded %d PHP extensions (available but not auto-loaded for compatibility)\n", extensions_embedded);
-    return UB_SUCCESS;
-}
+
 
 /* TU-local handle to the active exclude list. Set by php_embed_application
  * before the recursion starts, cleared on return. Single-threaded per build

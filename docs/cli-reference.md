@@ -36,6 +36,28 @@ ubuilder [OPTIONS]
 **Default:** Auto-detected (`main.php`, `main.py`, `main.js`, `index.*`)  
 **Example:** `--entry-point=bootstrap.php`
 
+### `--exclude PATTERN`
+
+**Description:** Drop files or dependencies from the bundle. Repeatable; entries append to the `exclude` array in `ubuilder.json`.
+**Type:** Pattern string  
+**Categories accepted:**
+
+- **File / dir glob** (matches paths in the project tree) — `*` (segment), `**` (cross `/`), `?`, `[abc]`, `[a-z]`, `[!abc]`. Leading `/` anchors to project root. Trailing `/` matches only directories. Backslashes are normalized to `/`.
+- **PHP extension** — `ext-<name>` or bare `<name>`. Drops the entry from the composer-declared extension list AND passes `--ignore-platform-req=ext-<name>` to `composer install`.
+- **Python wheel** — PEP-503-normalized package name. Filters `requirements.txt` line-by-line before `pip install` runs.
+- **Node module** — npm package name. Drops the key from `dependencies` / `devDependencies` / `optionalDependencies` / `peerDependencies` of the staged `package.json`; if anything was dropped the staged `package-lock.json` is removed and `npm install` is used instead of `npm ci`.
+
+**Examples:**
+
+```bash
+ubuilder --exclude='tests/**' --exclude='*.md'        # drop tests and markdown
+ubuilder --exclude=ext-curl                           # drop PHP ext-curl
+ubuilder --exclude=six                                # drop Python `six` wheel
+ubuilder --exclude=is-number                          # drop Node `is-number`
+```
+
+Excluded deps invalidate the install-cache key, so cache hits stay correct across `--exclude` changes.
+
 ### `--verbose`
 
 **Description:** Enable verbose output for debugging  
