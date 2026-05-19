@@ -1,7 +1,19 @@
 # Roadmap — Best-DX Items For Next Sessions
 
 **Purpose:** capture the remaining best-DX items with enough concrete context that a future session can pick them up cold without re-deriving the design.
-**Order:** roughly by user-visible impact. Pick #1 next.
+**Order:** roughly by user-visible impact.
+
+## Status snapshot
+
+- ✅ #1 README rewrite — landed in commit `34e859d`
+- ✅ #2 Content-addressed install cache — landed in commit `588f19d`
+- ✅ #3 Lockfile reproducibility — landed in commit `588f19d` (bundled with #2)
+- ⏳ #4 M1-D PHP hermetic — open (needs CI workflow building static-php-cli)
+- ⏳ #5 arm64 + macOS vendor entries — open (untestable on Linux x86_64 dev host)
+- ✅ #6 Auto-vendor download UX polish — landed in commit `753a836`
+- ⏳ #7 `ubuilder init` subcommand — open (lowest priority)
+
+Remaining items in this doc are kept for future-session scope.
 
 ---
 
