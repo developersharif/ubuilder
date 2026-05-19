@@ -33,6 +33,24 @@ extern "C" {
  */
 void ub_update_check_run(void);
 
+/*
+ * Foreground self-update. Triggered by `ubuilder --self-update`.
+ *
+ * Resolves the latest GitHub release tag (fresh fetch, ignores the
+ * 24h cache), determines the platform archive name, downloads via
+ * curl into a temp dir, extracts the inner ubuilder binary via tar,
+ * verifies the new binary runs (`<new> --version` exit 0), and
+ * atomically replaces the currently-running binary with it.
+ *
+ * Returns 0 on success, non-zero on any error (network down, no
+ * write permission to the binary's path, hash mismatch, extracted
+ * binary doesn't run, …). Always prints a precise reason on failure.
+ *
+ * If the latest tag is the same as or older than the running version,
+ * prints "already on latest" and returns 0.
+ */
+int ub_self_update_run(void);
+
 #ifdef __cplusplus
 }
 #endif

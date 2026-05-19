@@ -16,6 +16,12 @@
  * CreateProcess + DETACHED_PROCESS variant. Not worth the complexity
  * until we have a Windows ubuilder.exe distribution channel. */
 void ub_update_check_run(void) { /* no-op on Windows */ }
+int  ub_self_update_run(void)  {
+    fprintf(stderr, "ubuilder: --self-update is not yet supported on Windows.\n"
+                    "          Download the latest ubuilder-windows-amd64.zip manually from\n"
+                    "          https://github.com/developersharif/ubuilder/releases/latest\n");
+    return 1;
+}
 #else
 
 #include <unistd.h>
@@ -191,6 +197,220 @@ void ub_update_check_run(void) {
     if (!cache_was_fresh) {
         spawn_background_update_check(cache_path);
     }
+}
+
+/* ----- foreground --self-update path ------------------------------------ */
+
+/* Resolve the latest release tag synchronously via curl. Writes the tag
+ * (e.g. "v2.1.5") into out (capacity out_cap). Returns 0 on success,
+ * -1 on any failure (no curl, network error, missing tag_name in JSON). */
+static int fetch_latest_tag(char* out, size_t out_cap) {
+    char* curl = pc_path_lookup("curl");
+    if (!curl) {
+        fprintf(stderr, "Error: curl not found on PATH — needed for --self-update\n");
+        return -1;
+    }
+    char* argv[] = {
+        curl, (char*)"-fsL", (char*)"--max-time", (char*)"15",
+        (char*)"-H", (char*)"User-Agent: ubuilder-self-update",
+        (char*)UB_UPDATE_RELEASE_API, NULL
+    };
+    char* captured = NULL;
+    int rc = pc_spawn_capture(curl, argv, NULL, NULL, 65536, &captured);
+    free(curl);
+    if (rc != 0 || !captured) {
+        fprintf(stderr, "Error: failed to query %s (curl exit %d) — check network / repo visibility\n",
+                UB_UPDATE_RELEASE_API, rc);
+        free(captured);
+        return -1;
+    }
+    const char* needle = "\"tag_name\"";
+    char* hit = strstr(captured, needle);
+    if (!hit) {
+        fprintf(stderr, "Error: GitHub API response missing tag_name field\n");
+        free(captured); return -1;
+    }
+    char* colon = strchr(hit + strlen(needle), ':'); if (!colon) { free(captured); return -1; }
+    char* q1 = strchr(colon, '"');                   if (!q1)    { free(captured); return -1; }
+    char* q2 = strchr(q1 + 1, '"');                  if (!q2)    { free(captured); return -1; }
+    size_t taglen = (size_t)(q2 - q1 - 1);
+    if (taglen == 0 || taglen >= out_cap) { free(captured); return -1; }
+    memcpy(out, q1 + 1, taglen);
+    out[taglen] = 0;
+    free(captured);
+    return 0;
+}
+
+/* Build the asset filename + URL for this platform. tag is like "v2.1.5".
+ * Returns 0 on success, -1 if platform isn't recognized. */
+static int build_asset_url(const char* tag,
+                           char* asset_name, size_t asset_cap,
+                           char* asset_url,  size_t url_cap) {
+    const char* plat = ub_get_platform_name();
+    /* release.yml asset naming: ubuilder-<plat>-amd64.tar.gz (linux/macos),
+     *                          ubuilder-windows-amd64.zip (Windows). */
+    if (strcmp(plat, "linux") == 0 || strcmp(plat, "macos") == 0) {
+        if (snprintf(asset_name, asset_cap, "ubuilder-%s-amd64.tar.gz", plat) >= (int)asset_cap) return -1;
+    } else {
+        fprintf(stderr, "Error: --self-update on platform '%s' is not supported by this build path\n", plat);
+        return -1;
+    }
+    if (snprintf(asset_url, url_cap,
+                 "https://github.com/developersharif/ubuilder/releases/download/%s/%s",
+                 tag, asset_name) >= (int)url_cap) return -1;
+    return 0;
+}
+
+int ub_self_update_run(void) {
+    /* 1. Resolve latest version. */
+    char tag[64];
+    if (fetch_latest_tag(tag, sizeof(tag)) != 0) return 1;
+    printf("Latest release: %s\n", tag);
+
+    if (!tag_is_newer(tag)) {
+        printf("Already on the latest version (you have %s).\n", ub_get_version_string());
+        return 0;
+    }
+
+    /* 2. Resolve our own path + writability. */
+    char self_path[1024];
+    if (pc_executable_path(self_path, sizeof(self_path)) != 0) {
+        fprintf(stderr, "Error: could not resolve the running ubuilder binary's own path\n");
+        return 1;
+    }
+    if (access(self_path, W_OK) != 0) {
+        fprintf(stderr,
+            "Error: cannot write to %s (%s).\n"
+            "       Either re-run with sudo (`sudo ubuilder --self-update`), or\n"
+            "       install the new binary manually:\n"
+            "         curl -L https://github.com/developersharif/ubuilder/releases/download/%s/ubuilder-%s-amd64.tar.gz | tar -xz\n",
+            self_path, strerror(errno), tag, ub_get_platform_name());
+        return 1;
+    }
+
+    /* 3. Resolve archive URL for this platform. */
+    char asset_name[128], asset_url[512];
+    if (build_asset_url(tag, asset_name, sizeof(asset_name),
+                        asset_url,  sizeof(asset_url)) != 0) return 1;
+
+    /* 4. Set up a temp staging dir. */
+    char stage_dir[1024];
+    snprintf(stage_dir, sizeof(stage_dir), "/tmp/ubuilder-self-update-%d", (int)getpid());
+    pc_remove_tree(stage_dir);
+    if (pc_mkdir_p(stage_dir) != 0) {
+        fprintf(stderr, "Error: cannot create staging dir %s\n", stage_dir);
+        return 1;
+    }
+    char archive_path[1280];
+    snprintf(archive_path, sizeof(archive_path), "%s/%s", stage_dir, asset_name);
+
+    /* 5. Download. */
+    printf("Downloading %s ...\n", asset_url);
+    char* curl = pc_path_lookup("curl");
+    if (!curl) { fprintf(stderr, "Error: curl not found on PATH\n"); pc_remove_tree(stage_dir); return 1; }
+    char* dl_argv[] = {
+        curl, (char*)"-fL", (char*)"--max-time", (char*)"120",
+        (char*)"-H", (char*)"User-Agent: ubuilder-self-update",
+        (char*)"-o", archive_path, (char*)asset_url, NULL
+    };
+    int rc = pc_spawn_and_wait(curl, dl_argv, NULL, NULL);
+    free(curl);
+    if (rc != 0) {
+        fprintf(stderr, "Error: curl failed to download %s (exit %d)\n", asset_url, rc);
+        pc_remove_tree(stage_dir);
+        return 1;
+    }
+
+    /* 6. Extract via tar (always present on the platforms we ship). */
+    char* tar_exe = pc_path_lookup("tar");
+    if (!tar_exe) { fprintf(stderr, "Error: tar not found on PATH\n"); pc_remove_tree(stage_dir); return 1; }
+    char* tar_argv[] = {
+        tar_exe, (char*)"-xzf", archive_path, (char*)"-C", stage_dir, NULL
+    };
+    rc = pc_spawn_and_wait(tar_exe, tar_argv, NULL, NULL);
+    free(tar_exe);
+    if (rc != 0) {
+        fprintf(stderr, "Error: tar failed to extract %s (exit %d)\n", archive_path, rc);
+        pc_remove_tree(stage_dir);
+        return 1;
+    }
+
+    /* 7. Locate the extracted binary. The release-package tar has the
+     * binary at the archive root (`./ubuilder` after tar's leading-./
+     * stripping). */
+    char new_bin[1280];
+    snprintf(new_bin, sizeof(new_bin), "%s/ubuilder", stage_dir);
+    struct stat nst;
+    if (stat(new_bin, &nst) != 0 || !S_ISREG(nst.st_mode)) {
+        fprintf(stderr, "Error: extracted archive doesn't contain ./ubuilder at %s\n", new_bin);
+        pc_remove_tree(stage_dir);
+        return 1;
+    }
+    chmod(new_bin, 0755);
+
+    /* 8. Smoke-test: run `<new> --version`. If it doesn't exit 0 with
+     * a sensible version string, refuse to install. */
+    char* probe_argv[] = { new_bin, (char*)"--version", NULL };
+    char* probe_out = NULL;
+    rc = pc_spawn_capture(new_bin, probe_argv, NULL, NULL, 4096, &probe_out);
+    if (rc != 0 || !probe_out || !strstr(probe_out, "UBuilder")) {
+        fprintf(stderr, "Error: the downloaded binary failed its --version smoke test (rc=%d).\n"
+                        "       Output: %s\n"
+                        "       Aborting; your installed binary is unchanged.\n",
+                rc, probe_out ? probe_out : "(empty)");
+        free(probe_out);
+        pc_remove_tree(stage_dir);
+        return 1;
+    }
+    free(probe_out);
+
+    /* 9. Atomically replace. rename(2) is atomic within a filesystem;
+     * across filesystems it fails with EXDEV and we fall back to a
+     * copy+unlink. (Common case: /tmp on tmpfs, /usr/local/bin on
+     * the root filesystem.) */
+    if (rename(new_bin, self_path) != 0) {
+        if (errno != EXDEV) {
+            fprintf(stderr, "Error: rename(%s, %s) failed: %s\n", new_bin, self_path, strerror(errno));
+            pc_remove_tree(stage_dir);
+            return 1;
+        }
+        /* Cross-fs: copy + replace. */
+        FILE* in  = fopen(new_bin, "rb");
+        if (!in) { fprintf(stderr, "Error: cannot reopen %s\n", new_bin); pc_remove_tree(stage_dir); return 1; }
+        char swap_path[1280];
+        snprintf(swap_path, sizeof(swap_path), "%s.swap-%d", self_path, (int)getpid());
+        FILE* out = fopen(swap_path, "wb");
+        if (!out) {
+            fprintf(stderr, "Error: cannot open %s for writing: %s\n", swap_path, strerror(errno));
+            fclose(in); pc_remove_tree(stage_dir); return 1;
+        }
+        char buf[8192]; size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+            if (fwrite(buf, 1, n, out) != n) {
+                fclose(in); fclose(out); unlink(swap_path);
+                fprintf(stderr, "Error: write failed on %s\n", swap_path);
+                pc_remove_tree(stage_dir); return 1;
+            }
+        }
+        fclose(in); fclose(out);
+        chmod(swap_path, 0755);
+        if (rename(swap_path, self_path) != 0) {
+            fprintf(stderr, "Error: final rename failed: %s\n", strerror(errno));
+            unlink(swap_path); pc_remove_tree(stage_dir); return 1;
+        }
+    }
+
+    pc_remove_tree(stage_dir);
+
+    /* Bust the update-check cache so the freshly-installed binary
+     * doesn't immediately complain about itself. */
+    char cache_path[1280];
+    if (build_cache_path(cache_path, sizeof(cache_path)) == 0) {
+        unlink(cache_path);
+    }
+
+    printf("ubuilder upgraded to %s. Re-run any in-progress commands.\n", tag);
+    return 0;
 }
 
 #endif /* !PLATFORM_WINDOWS */

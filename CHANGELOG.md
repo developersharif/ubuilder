@@ -5,11 +5,19 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.1.2] - 2026-05-19
+## [2.2.0] - 2026-05-19
+
+### Added
+
+- **Update-available banner.** Every builder-mode `ubuilder` invocation now reads (or asynchronously refreshes) a cached snapshot of the latest GitHub release. If the cache shows a newer version, a one-line banner prints to stderr telling the user to run `ubuilder --self-update`. Cache TTL: 24 hours under `$XDG_CACHE_HOME/ubuilder/last-update-check`. Stale cache fires a fork-and-detach `curl` so the current build never blocks on network. Silenced when stderr isn't a TTY (CI / pipes) or `UBUILDER_NO_UPDATE_CHECK=1` is set. Bundle launches never trigger the check.
+- **`--self-update` flag.** Resolves the latest release tag from GitHub, downloads the platform archive (`ubuilder-<linux|macos>-amd64.tar.gz`), extracts the inner `ubuilder` binary, smoke-tests it (`--version` must exit 0), and atomically replaces the running binary. Refuses if it can't write to its own path (suggests `sudo`). Cross-filesystem rename falls back to copy+replace. Windows path emits a manual-install hint.
+- **Configured `entry_point` honored by the launcher.** `php_embed_application` now writes a `.ubuilder.entry` marker as the first embedded record carrying the entry path; the launcher's extraction loop reads it and locks the script. Lets bundles use Laravel's `artisan`, Symfony's `bin/console`, or any other non-`main.php`/`index.php` entry. The marker is invisible to the PHP runtime (PHP doesn't load `.ubuilder.entry`).
+- **Argv passthrough to bundles.** `./bundle serve --port=8000`, `./bundle migrate --seed`, `./bundle -v` etc. now reach the embedded interpreter with argv intact. Previously, any `-`-prefixed argv triggered the builder-mode fallback, where getopt would error with "unrecognized option". The fix drops the (incorrect) argv sniff in `ub_check_and_run_embedded_app`; the trailing `UBUILDER_MODULAR_V4_SHA256_MARKER` is now the sole discriminator between bundle and builder.
+- **Quiet output by default; full detail under `--verbose`.** A typical PHP build went from ~20 lines of internal info to ~3 lines (host-ext count summary, composer install status, final success line). Internal banners ("Building executable for runtime: 1", "Using PHP runtime builder (...)", "Estimated runtime size", "Embedded N files from /tmp/...", "Payload SHA-256", etc.) only show under `-v`/`--verbose`. New `ub_verbose` global lets helpers that don't take `ub_config_t*` gate their info prints.
 
 ### Fixed
 
-- **PHP bundle entry-point picked the wrong file.** The launcher's PHP entry-point selector only preferred `main.php`. For any project using the equally-conventional `index.php` (or `bootstrap.php`, etc.), it picked whichever `.php` file extracted first alphabetically — for filemanager-phpgui that was `src/Icons.php`, a class file with no top-level code, so the bundle launched, ran an empty file, and exited 0 silently. Verified via `strace -e execve`: `execve(.../bin/php, [..., "Icons.php"], ...)`. New selection order: `main.php` → root-level `index.php` → first `.php` file as fallback. (`src/core/ubuilder.c`)
+- **PHP bundle entry-point picked the wrong file.** The launcher's PHP entry-point selector only preferred `main.php`. For any project using `index.php` (or `bootstrap.php`, etc.), it picked whichever `.php` file extracted first alphabetically — for filemanager-phpgui that was `src/Icons.php`, a class file with no top-level code, so the bundle launched, ran an empty file, and exited 0 silently. Verified via `strace -e execve`: `execve(.../bin/php, [..., "Icons.php"], ...)`. (`src/core/ubuilder.c`)
 - **FFI silently disabled inside the bundle.** PHP 8+ defaults to `ffi.enable=preload`, which disables FFI in CLI mode unless `opcache.preload` is configured — bundles run as standalone CLI processes (no preload step), so FFI calls were silently no-op'd. Generated `99-ubuilder-overrides.ini` now forces `ffi.enable=true`. Required for any FFI-driven app (php-gui, php-tk, swoole, etc.) to actually function.
 
 ### Changed

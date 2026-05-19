@@ -28,6 +28,7 @@ static struct option long_options[] = {
     {"no-install-deps",   no_argument,       0,  4 },
     {"no-auto-vendor",    no_argument,       0,  5 },
     {"exclude",           required_argument, 0,  6 },
+    {"self-update",       no_argument,       0,  7 },
     {"gui",               no_argument,       0, 'g'},
     {"verbose",     no_argument,       0, 'v'},
     {"help",        no_argument,       0, 'h'},
@@ -188,6 +189,9 @@ static void print_usage(const char* program_name) {
     printf("      --exclude PATTERN     Drop a file glob or PHP `ext-<name>` from the bundle.\n");
     printf("                            Repeatable. Appends to ubuilder.json's \"exclude\" array.\n");
     printf("                            Globs: * (one segment), ** (cross /), ?, [abc], [a-z].\n");
+    printf("      --self-update         Download and install the latest release of ubuilder itself.\n");
+    printf("                            Replaces the running binary in place; needs write\n");
+    printf("                            permission on its own path (use sudo for /usr/local/bin).\n");
     printf("  -g, --gui                 Enable GUI support\n");
     printf("  -v, --verbose             Enable verbose output\n");
     printf("  -h, --help                Show this help message\n");
@@ -276,6 +280,10 @@ static ub_result_t parse_arguments(int argc, char* argv[],
             if (append_exclude(config, presence, argv[++i]) != 0) return UB_ERROR_MEMORY_ALLOCATION;
         } else if (strncmp(arg, "--exclude=", 10) == 0) {
             if (append_exclude(config, presence, arg + 10) != 0) return UB_ERROR_INVALID_ARGS;
+        } else if (strcmp(arg, "--self-update") == 0) {
+            /* Short-circuit: do the update and exit before any build flow. */
+            int rc = ub_self_update_run();
+            exit(rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
         } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
             presence->gui = 1;
@@ -341,6 +349,9 @@ static ub_result_t parse_arguments(int argc, char* argv[],
                 if (append_exclude(config, presence, optarg) != 0)
                     return UB_ERROR_MEMORY_ALLOCATION;
                 break;
+            case 7: /* --self-update */
+                /* Short-circuit before any build setup. */
+                exit(ub_self_update_run() == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
             case 'g':
                 config->enable_gui = 1;
                 presence->gui = 1;
