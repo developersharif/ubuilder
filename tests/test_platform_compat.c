@@ -4,7 +4,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#ifdef _WIN32
+#  include <io.h>
+#  include <process.h>
+#  include <direct.h>
+#  define getpid    _getpid
+#  define unlink    _unlink
+#  define access    _access
+#  define F_OK      0
+#  define mkdir(p, m) _mkdir(p)
+#  ifndef S_ISDIR
+#    define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#  endif
+#  ifndef S_ISREG
+#    define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#  endif
+#else
+#  include <unistd.h>
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>

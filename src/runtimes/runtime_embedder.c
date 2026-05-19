@@ -16,6 +16,14 @@
     #define readlink(path, buf, size) (-1)  // Not available on Windows
     #define lstat stat  // Use stat instead of lstat on Windows
     #define S_ISLNK(mode) (0)  // No symbolic links concept on Windows like Unix
+    // MSVC's sys/stat.h lacks POSIX S_ISDIR/S_ISREG; provide the standard
+    // bitfield checks so embed_tree_walk and friends compile on Windows.
+    #ifndef S_ISDIR
+    #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+    #endif
+    #ifndef S_ISREG
+    #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+    #endif
     #define unlink _unlink
     #define chmod _chmod
     // Define access mode constants for Windows

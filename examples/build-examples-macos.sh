@@ -151,7 +151,16 @@ build_example() {
         log_warning "Skipping $example_name due to missing $runtime runtime"
         return 2  # Special return code for missing runtime
     fi
-    
+
+    # M1-D PHP synthesis assumes Linux extension_dir layout; Homebrew PHP's
+    # Cellar/.../lib/php/<date> path + library naming isn't yet supported.
+    # Skip cleanly on macOS until M1-D-macos lands. Same shape as the
+    # documented libxml2-SONAME cross-distro caveat for Linux.
+    if [ "$runtime" = "php" ]; then
+        log_warning "Skipping $example_name on macOS — PHP M1-D synthesis is Linux-only in v2.1.x (see CHANGELOG \"Known limitations\")"
+        return 2
+    fi
+
     # Build the example
     log_info "Creating executable for $example_name (runtime: $runtime)..."
     if ! "${BUILD_DIR}/src/ubuilder" --project-dir="$example_dir" --runtime="$runtime" --output="$output_executable"; then

@@ -30,7 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known limitations
 
 - **PHP bundles are tied to the build host's libxml2 SONAME family.** The host's `/usr/bin/php` is hardlinked into the bundle and dynamically links `libxml2.so.<N>` (currently `.16` on Ubuntu 24.10+ / Debian Trixie+, `.2` on older glibc distros). A bundle built on Ubuntu 25.10 will fail with `libxml2.so.16: cannot open shared object file` when run on Debian 12 / Ubuntu 22.04. Truly hermetic ldd-bundling is future work; today, build on the same distro family as your deployment target. See `src/runtimes/php_builder.c` block comment.
+- **PHP runtime on macOS is not supported in this release.** M1-D's synthetic-runtime path assumes Linux's `extension_dir` layout (`<prefix>/lib/php/<date>/`) and `apt`-shaped extension naming. Homebrew PHP's `Cellar/php/<ver>/lib/php/<datestamp>/` path + Mach-O extension files aren't handled yet. `examples/build-examples-macos.sh` skips the PHP example cleanly until M1-D-macos lands. Python and Node bundles on macOS are supported and hermetic.
 - **Release script**: previous `create-release.sh` had two bugs that would have corrupted a release (`sed s/#define UBUILDER_VERSION.*/.../` clobbered MAJOR/MINOR/PATCH to the same string; CHANGELOG step always prepended a stub that pushed curated content down). Both fixed; the script now supports `--dry-run` and is idempotent on a pre-bumped tree.
+
+### Fixed in this release (post-tag-cut)
+
+- **MSVC compile errors** in `tests/test_{config,php_builder,platform_compat,sha256}.c` (unconditional `<unistd.h>` include) and `src/runtimes/runtime_embedder.c` (missing `S_ISDIR`/`S_ISREG` on MSVC). Tests now have a per-file Windows compat shim; `runtime_embedder.c` gains the standard bitfield macros under `#ifdef PLATFORM_WINDOWS`.
+- **macOS auto-vendor failure** in `scripts/vendor-runtimes.sh` from `declare -A` (bash-4-only; macOS ships bash 3.2). Replaced with a space-padded string + glob-match membership test that's bash-3.2 compatible.
+- **macOS hermetic runtimes**: added arm64 and x86_64 entries for Python (`python-build-standalone`) and Node (official `nodejs.org` darwin builds) so auto-vendor produces portable bundles on macOS instead of falling back to the non-portable Homebrew binary.
 
 ## [2.0.1] - 2025-06-25
 
