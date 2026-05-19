@@ -1,6 +1,8 @@
 # UBuilder
 
-> **Turn a Python, Node.js, or PHP project into one executable that runs anywhere — no interpreter, no `pip install`, no `npm install` on the target machine.**
+Bundle a Python, Node.js, or PHP project into a single executable.
+The output runs on any machine of the same OS and architecture
+without Python, Node, PHP, `pip install`, or `npm install`.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/developersharif/ubuilder/workflows/UBuilder%20Cross-Platform%20CI/badge.svg)](https://github.com/developersharif/ubuilder/actions)
@@ -8,7 +10,11 @@
 [![macOS](https://img.shields.io/badge/macOS-supported-success.svg)]()
 [![Windows](https://img.shields.io/badge/Windows-supported-success.svg)]()
 
-UBuilder packages your app, its interpreter (Python / Node.js / PHP), and every third-party dependency into one self-contained binary. The binary is integrity-checked at startup (SHA-256 over the payload) and extracts itself to a temp directory at launch. Build machines need nothing global installed either — the first run downloads pinned interpreter tarballs into a local cache.
+The bundle contains your app, an interpreter, and every third-party
+dependency. At startup it verifies a SHA-256 over the payload, extracts
+to a temp directory, and execs the embedded interpreter. The build
+machine doesn't need a global Python/Node/PHP install either: the first
+run downloads pinned interpreter tarballs into a local cache.
 
 ```bash
 cd my-app/                   # contains main.py + (optional) requirements.txt
@@ -52,7 +58,10 @@ ubuilder --version
 
 The `xattr` line removes Gatekeeper's quarantine flag on the downloaded binary.
 
-**Important — Intel Macs:** the published `ubuilder-macos-amd64.tar.gz` archive is actually an **arm64** binary (the CI macOS runner is `macos-15-arm64`; the `-amd64` suffix is a historical naming artifact). If you're on an Intel Mac, [build from source](#from-source-all-platforms) — it takes under a minute.
+Intel Macs: the published `ubuilder-macos-amd64.tar.gz` is actually an
+arm64 binary today (the CI macOS runner is `macos-15-arm64`; the
+`-amd64` suffix in the asset name is a naming carryover). If you're on
+an Intel Mac, [build from source](#from-source-all-platforms) instead.
 
 ### Windows (x86_64)
 
@@ -289,6 +298,7 @@ The zero-flag path is the default. Pass these for non-default cases:
 | `--no-install-deps` | Skip `pip` / `npm` / `composer install` |
 | `--no-auto-vendor` | Don't auto-spawn `scripts/vendor-runtimes.sh` on cache miss |
 | `--exclude <pat>` (repeatable) | Drop a file glob, PHP ext, Python wheel, or Node module |
+| `--self-update` | Download the latest ubuilder release and replace this binary |
 | `--verbose` / `-v` | Show every spawned subprocess |
 | `--version` / `-V` | Print the ubuilder version |
 | `--help` / `-h` | Show all flags |
@@ -303,11 +313,16 @@ The zero-flag path is the default. Pass these for non-default cases:
 | **Node.js** | ✅ Hermetic | ✅ Hermetic | ✅ Host | Tier-3 Docker isolation passing on Linux + macOS |
 | **PHP** | ✅ Host-bits hermetic | ⚠️ Roadmap | ✅ Host | M1-D Linux ships embedded `bin/php` + composer extensions |
 
-**Known limitations** (v2.1.x):
+Known limitations:
 
-- **PHP cross-distro portability**: bundles built on one Linux distro ship that distro's `libxml2.so.<N>`. Build on the same family as your deployment target (e.g. Ubuntu 24.10+ / Debian Trixie+ both ship `libxml2.so.16`). Tracked under `src/runtimes/php_builder.c`.
-- **PHP on macOS**: M1-D's synthetic-runtime path assumes Linux's `extension_dir` layout; Homebrew PHP's Cellar isn't handled yet. `examples/build-examples-macos.sh` skips the PHP example cleanly with a message.
-- **Windows runtimes**: bundles use the host's `python.exe` / `node.exe` / `php.exe` rather than a vendored hermetic tree. Hermetic Windows is roadmap work.
+- PHP cross-distro portability: bundles include the host's `libxml2.so.<N>`.
+  Build on the same distro family as your deployment target. Ubuntu 24.10+
+  and Debian Trixie+ both ship `libxml2.so.16`; older distros ship `.so.2`.
+- PHP on macOS: the synthetic-runtime path assumes a Linux `extension_dir`
+  layout; Homebrew's Cellar isn't handled yet. The macOS example build
+  skips the PHP fixture with a clear message.
+- Windows: bundles use the host's `python.exe` / `node.exe` / `php.exe`
+  rather than a vendored hermetic tree. Hermetic Windows is on the roadmap.
 
 Full roadmap: [`docs/internals/architecture/ROADMAP_NEXT.md`](docs/internals/architecture/ROADMAP_NEXT.md).
 
