@@ -56,10 +56,15 @@ detect_php_image() {
         soname="$(ldd "$(command -v php)" 2>/dev/null \
                   | sed -n 's/.*\(libxml2\.so\.[0-9]*\).*/\1/p' | head -1)"
     fi
+    # ubuntu:24.04 (noble, glibc 2.39) ships libxml2.so.2 AND a recent
+    # enough glibc to cover PHP-cli builds that need GLIBC_2.38 (e.g. the
+    # GitHub Actions ubuntu-20.04 runner whose php-cli is unusually new).
+    # Prefer it over ubuntu:22.04 (glibc 2.35) which often fails the
+    # GLIBC version check.
     case "$soname" in
         libxml2.so.16) echo "ubuntu:25.10" ;;
-        libxml2.so.2)  echo "ubuntu:22.04" ;;
-        *)             echo "ubuntu:24.04" ;;   # neutral fallback
+        libxml2.so.2)  echo "ubuntu:24.04" ;;
+        *)             echo "ubuntu:24.04" ;;
     esac
 }
 DOCKER_IMAGE_PHP="${UBUILDER_TIER3_PHP_IMAGE:-$(detect_php_image)}"
