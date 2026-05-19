@@ -1,0 +1,12 @@
+{
+    "name": "ubuilder/php-with-deps-fixture",
+    "description": "Bundle test fixture exercising the M1-D composer install + install-cache path.",
+    "type": "project",
+    "require": {
+        "php": ">=7.4",
+        "psr/log": "^1.1"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

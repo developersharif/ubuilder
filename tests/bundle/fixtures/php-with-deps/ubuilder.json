@@ -1,0 +1,5 @@
+{
+  "name": "php-with-deps-fixture",
+  "runtime": "php",
+  "entry_point": "main.php"
+}

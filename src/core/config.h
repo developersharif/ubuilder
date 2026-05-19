@@ -21,6 +21,7 @@ typedef struct {
     unsigned use_host_runtime  : 1;
     unsigned no_install_deps   : 1;
     unsigned no_auto_vendor    : 1;
+    unsigned exclude           : 1;
 } ub_cli_presence_t;
 
 typedef struct ub_config_file ub_config_file_t;
@@ -63,6 +64,18 @@ ub_result_t ub_config_apply(const ub_config_file_t*    file,
 const char* ub_config_path(const ub_config_file_t* file);
 
 void ub_config_free(ub_config_file_t* file);
+
+/*
+ * If no ubuilder.json is present in `cfg->project_dir`, write one capturing
+ * the runtime, entry_point, output basename, and any --exclude patterns
+ * actually used by this build. Idempotent: a no-op when the file already
+ * exists.
+ *
+ * Returns UB_SUCCESS even on a no-op. Returns an error if writing failed
+ * (which the caller may treat as a soft warning — the build has already
+ * succeeded by the time we get here).
+ */
+ub_result_t ub_config_write_if_missing(const ub_config_t* cfg);
 
 #ifdef __cplusplus
 }

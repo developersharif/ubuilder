@@ -1,6 +1,8 @@
 #include "runtime_builder.h"
 #include "runtime_embedder.h"
 #include "../core/platform_compat.h"
+#include "../core/json_mini.h"
+#include "../core/glob_match.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +25,225 @@ static ub_result_t php_embed_extensions(FILE* output_file);
 static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_file);
 #endif
 
+#ifndef PLATFORM_WINDOWS
+/* ============================================================
+ * M1-D (PHP hermetic-with-host-bits)
+ *
+ * On POSIX the PHP runtime is too sprawling to vendor as a prebuilt
+ * (no upstream pre-built static PHP exists; static-php-cli is a self-
+ * build path). Instead we bundle:
+ *   - host /usr/bin/php   → bin/php
+ *   - extensions enumerated in composer.json's `require.ext-*`, copied
+ *     from the host's extension_dir → ext/<name>.so
+ *   - a generated php.ini with sensible defaults + extension lines
+ *
+ * Caveat (documented in M1_PHP.md): bundle still depends on system
+ * shared libs (libgd, libxml2, libcurl, ...) being present on the
+ * target. Truly hermetic ldd-bundling is future work. For CLI / web /
+ * GUI-via-FFI use cases on Debian-family targets this is shippable
+ * today.
+ *
+ * Composer integration (mirrors M8 / M8-B): if composer.json is
+ * present, run `composer install --no-dev` against a staged copy of
+ * the project; vendor/ ships in the bundle. Honors the install-cache
+ * with composer.lock as a key input.
+ * ============================================================ */
+
+/* List of extension names (without `.so`) parsed from composer.json. */
+typedef struct {
+    char** names;
+    size_t count;
+} php_ext_list_t;
+
+static void php_ext_list_free(php_ext_list_t* l) {
+    if (!l) return;
+    for (size_t i = 0; i < l->count; i++) free(l->names[i]);
+    free(l->names);
+    l->names = NULL;
+    l->count = 0;
+}
+
+/* Parse `<project>/composer.json` for `require` keys starting with
+ * "ext-". Caller frees with php_ext_list_free. Returns 0 on success
+ * (including "file absent" → empty list); -1 only on malformed JSON. */
+static int php_parse_composer_extensions(const char* project_dir, php_ext_list_t* out) {
+    out->names = NULL;
+    out->count = 0;
+
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/composer.json", project_dir);
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;  /* No composer.json → no extensions, not an error. */
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long n = ftell(f);
+    if (n < 0 || n > 16 * 1024 * 1024) { fclose(f); return -1; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
+    char* buf = (char*)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return -1; }
+    if ((long)fread(buf, 1, (size_t)n, f) != n) { free(buf); fclose(f); return -1; }
+    buf[n] = 0;
+    fclose(f);
+
+    char err[256];
+    json_value_t* root = json_parse(buf, (size_t)n, err, sizeof(err));
+    free(buf);
+    if (!root) {
+        fprintf(stderr, "Error: composer.json parse failed: %s\n", err);
+        return -1;
+    }
+
+    const json_value_t* req = json_obj_get(root, "require");
+    if (!req || req->type != JSON_OBJECT) { json_free(root); return 0; }
+
+    /* First pass: count. */
+    size_t ext_count = 0;
+    for (size_t i = 0; i < req->v.obj.count; i++) {
+        const char* k = req->v.obj.pairs[i].key;
+        if (strncmp(k, "ext-", 4) == 0) ext_count++;
+    }
+    if (ext_count == 0) { json_free(root); return 0; }
+
+    out->names = (char**)calloc(ext_count, sizeof(char*));
+    if (!out->names) { json_free(root); return -1; }
+
+    for (size_t i = 0; i < req->v.obj.count; i++) {
+        const char* k = req->v.obj.pairs[i].key;
+        if (strncmp(k, "ext-", 4) != 0) continue;
+        const char* name = k + 4;
+        char* dup = strdup(name);
+        if (!dup) { php_ext_list_free(out); json_free(root); return -1; }
+        out->names[out->count++] = dup;
+    }
+    json_free(root);
+    return 0;
+}
+
+/* Probe `<php_bin> -r 'echo ini_get("extension_dir");'`. Returns 0 / -1. */
+static int php_probe_extension_dir(const char* php_bin, char* out, size_t out_cap) {
+    char* argv[] = {
+        (char*)php_bin,
+        (char*)"-d", (char*)"extension_dir=",  /* Block auto-load — just want the default. */
+        (char*)"-r", (char*)"echo ini_get(\"extension_dir\");",
+        NULL
+    };
+    char* captured = NULL;
+    int rc = pc_spawn_capture(php_bin, argv, NULL, NULL, 4096, &captured);
+    if (rc != 0 || !captured) { free(captured); return -1; }
+    size_t len = strlen(captured);
+    if (len == 0 || len >= out_cap) { free(captured); return -1; }
+    memcpy(out, captured, len + 1);
+    free(captured);
+    return 0;
+}
+
+/* Write a php.ini with reasonable defaults + extension=<name> lines.
+ * Path resolution is handled by the launcher passing -d extension_dir=
+ * at spawn time, so we don't bake a path into the ini. */
+static int php_write_default_ini(const char* ini_path,
+                                 const php_ext_list_t* exts) {
+    FILE* f = fopen(ini_path, "w");
+    if (!f) return -1;
+    fprintf(f,
+        "; ubuilder-generated php.ini\n"
+        "; Tuned for bundled CLI / web-server / FFI-GUI workloads.\n"
+        "\n"
+        "memory_limit = 256M\n"
+        "max_execution_time = 0\n"
+        "error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT\n"
+        "display_errors = stderr\n"
+        "log_errors = On\n"
+        "date.timezone = UTC\n"
+        "\n"
+        "; OPcache: on for CLI long-running scripts (e.g. PHP servers,\n"
+        "; FFI/GUI event loops). Disable file timestamp checks since\n"
+        "; bundled files are immutable.\n"
+        "opcache.enable = 1\n"
+        "opcache.enable_cli = 1\n"
+        "opcache.validate_timestamps = 0\n"
+        "\n"
+        "; Phar: ubuilder bundles run from a temp dir; users may want\n"
+        "; to load .phar archives. Enabled.\n"
+        "phar.readonly = 0\n"
+        "\n");
+
+    if (exts->count > 0) {
+        fprintf(f, "; extensions declared in composer.json's require.ext-*\n");
+        for (size_t i = 0; i < exts->count; i++) {
+            fprintf(f, "extension=%s\n", exts->names[i]);
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+/* Compose a synthetic runtime tree at `stage_dir` containing:
+ *   bin/php          (hardlink/copy of host php)
+ *   bin/php.ini      (generated)
+ *   ext/<name>.so    (hardlink/copy from host extension_dir)
+ *
+ * Returns UB_SUCCESS on success; the caller embeds via
+ * ub_embed_runtime_tree(stage_dir) and removes `stage_dir` afterwards.
+ * Missing extensions abort with a clear "install php-<name>" hint. */
+static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
+                                               const char* ext_dir_host,
+                                               const php_ext_list_t* exts,
+                                               const char* stage_dir) {
+    char p[1024];
+
+    pc_remove_tree(stage_dir);
+    snprintf(p, sizeof(p), "%s/bin", stage_dir); if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
+    snprintf(p, sizeof(p), "%s/ext", stage_dir); if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
+
+    /* bin/php — hardlink-or-copy from the host. */
+    snprintf(p, sizeof(p), "%s/bin/php", stage_dir);
+    if (pc_copy_or_link_tree(php_bin, p) != 0) {
+        fprintf(stderr, "Error: failed to stage host PHP binary at %s\n", p);
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+    chmod(p, 0755);
+
+    /* bin/php.ini — generated. */
+    snprintf(p, sizeof(p), "%s/bin/php.ini", stage_dir);
+    if (php_write_default_ini(p, exts) != 0) {
+        fprintf(stderr, "Error: failed to write %s\n", p);
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+
+    /* ext/<name>.so — one per declared extension. */
+    int missing = 0;
+    for (size_t i = 0; i < exts->count; i++) {
+        char src[1024], dst[1024];
+        snprintf(src, sizeof(src), "%s/%s.so", ext_dir_host, exts->names[i]);
+        snprintf(dst, sizeof(dst), "%s/ext/%s.so", stage_dir, exts->names[i]);
+        struct stat st;
+        if (stat(src, &st) != 0) {
+            fprintf(stderr,
+                    "Error: composer.json declares ext-%s but no %s found in host extension_dir.\n"
+                    "       On Debian/Ubuntu: sudo apt install php-%s\n"
+                    "       On RHEL/Fedora:   sudo dnf install php-%s\n",
+                    exts->names[i], src, exts->names[i], exts->names[i]);
+            missing++;
+            continue;
+        }
+        if (pc_copy_or_link_tree(src, dst) != 0) {
+            fprintf(stderr, "Error: failed to stage extension %s\n", src);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+    }
+    if (missing > 0) return UB_ERROR_RUNTIME_NOT_FOUND;
+    return UB_SUCCESS;
+}
+
+/* Locate `composer` on the host PATH. Returns heap path or NULL. */
+static char* php_find_composer(void) {
+    char* p = pc_path_lookup("composer");
+    if (p) return p;
+    /* Fall back to /usr/local/bin/composer.phar style installs. */
+    return pc_path_lookup("composer.phar");
+}
+
+#endif  /* !PLATFORM_WINDOWS */
+
 // PHP runtime validation
 static ub_result_t php_validate_project(const char* project_dir) {
     char main_php_path[1024];
@@ -44,11 +265,12 @@ static ub_result_t php_validate_project(const char* project_dir) {
     return UB_ERROR_FILE_NOT_FOUND;
 }
 
-// Embed PHP runtime (M1-D: hermetic via vendored tree or user-chosen binary)
+// Embed PHP runtime (M1-D: synthetic tree from host php + composer ext-*)
 static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_file) {
     ub_result_t result;
 
 #ifndef PLATFORM_WINDOWS
+    /* Mode 1: explicit --runtime-source. Same shape as Python/Node. */
     if (config && config->runtime_source) {
         struct stat src_st;
         if (stat(config->runtime_source, &src_st) != 0) {
@@ -66,23 +288,90 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         fprintf(stderr, "Error: --runtime-source must be a file or directory\n");
         return UB_ERROR_INVALID_ARGS;
     }
-#endif
 
+    /* Mode 2: synthesize a runtime tree from host PHP + composer ext-* deps.
+     * This is the default path for `ubuilder` on PHP projects. */
+    char* php_bin = pc_path_lookup("php");
+    if (!php_bin) {
+        fprintf(stderr,
+                "Error: PHP not on PATH. Install php-cli, e.g.:\n"
+                "  sudo apt install php-cli\n");
+        return UB_ERROR_RUNTIME_NOT_FOUND;
+    }
+
+    char ext_dir_host[1024];
+    if (php_probe_extension_dir(php_bin, ext_dir_host, sizeof(ext_dir_host)) != 0) {
+        fprintf(stderr, "Error: could not probe host PHP for extension_dir\n");
+        free(php_bin);
+        return UB_ERROR_RUNTIME_NOT_FOUND;
+    }
+    printf("Host PHP: %s\n  extension_dir: %s\n", php_bin, ext_dir_host);
+
+    php_ext_list_t exts = {0};
+    int parsed = php_parse_composer_extensions(config ? config->project_dir : ".", &exts);
+    if (parsed != 0) {
+        free(php_bin);
+        return UB_ERROR_INVALID_ARGS;
+    }
+
+    /* Apply --exclude / exclude:[...] to the parsed ext list. Excluded
+     * entries are reported and dropped before staging so the user sees
+     * exactly which extensions won't ship. */
+    if (config && config->exclude_count > 0 && exts.count > 0) {
+        size_t write = 0;
+        for (size_t i = 0; i < exts.count; i++) {
+            if (ub_ext_excluded((const char* const*)config->exclude,
+                                config->exclude_count, exts.names[i])) {
+                printf("  - %s (excluded by config; not staged)\n", exts.names[i]);
+                free(exts.names[i]);
+                exts.names[i] = NULL;
+                continue;
+            }
+            exts.names[write++] = exts.names[i];
+        }
+        exts.count = write;
+    }
+
+    if (exts.count > 0) {
+        printf("composer.json declares %zu PHP extension%s:\n",
+               exts.count, exts.count == 1 ? "" : "s");
+        for (size_t i = 0; i < exts.count; i++) printf("  - %s\n", exts.names[i]);
+    }
+
+    /* Stage under XDG cache so hardlinks work. */
+    const char* xdg  = getenv("XDG_CACHE_HOME");
+    const char* home = getenv("HOME");
+    char stage[1024];
+    if (xdg && *xdg)        snprintf(stage, sizeof(stage), "%s/ubuilder/stage/php-rt-%d",        xdg,  (int)getpid());
+    else if (home && *home) snprintf(stage, sizeof(stage), "%s/.cache/ubuilder/stage/php-rt-%d", home, (int)getpid());
+    else                    snprintf(stage, sizeof(stage), "/tmp/ubuilder-php-rt-%d",                  (int)getpid());
+
+    result = php_stage_synthetic_runtime(php_bin, ext_dir_host, &exts, stage);
+    free(php_bin);
+    php_ext_list_free(&exts);
+    if (result != UB_SUCCESS) {
+        pc_remove_tree(stage);
+        return result;
+    }
+
+    printf("Embedding PHP synthetic runtime tree: %s\n", stage);
+    result = ub_embed_runtime_tree(stage, output_file);
+    pc_remove_tree(stage);
+    return result;
+#else
     ub_runtime_info_t runtime_info;
-    
+
     // Detect PHP binary on system
     result = ub_detect_runtime_binary(UB_RUNTIME_PHP, &runtime_info);
     if (result != UB_SUCCESS) {
         fprintf(stderr, "Error: PHP runtime not found on system\n");
         return result;
     }
-    
+
     printf("Embedding PHP runtime: %s\n", runtime_info.binary_path);
     printf("PHP version: %s\n", runtime_info.version_string ? runtime_info.version_string : "unknown");
-    
-#ifdef PLATFORM_WINDOWS
+
     // On Windows, we need to embed the entire PHP directory structure
-    // Extract the directory from php.exe path
     char php_dir[1024];
     strcpy(php_dir, runtime_info.binary_path);
     char* last_slash = strrchr(php_dir, '\\');
@@ -93,43 +382,13 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         ub_runtime_info_cleanup(&runtime_info);
         return UB_ERROR_INVALID_ARGS;
     }
-    
-    printf("PHP directory: %s\n", php_dir);
-    
-    // Embed the complete Windows PHP runtime
-    result = php_embed_windows_runtime(php_dir, output_file);
-    if (result != UB_SUCCESS) {
-        ub_runtime_info_cleanup(&runtime_info);
-        return result;
-    }
-#else
-    /* POSIX: 1-record tree using the host php binary at bin/php. Bundle is
-     * V5-format but non-portable (depends on host glibc + extensions). */
-    printf("Binary size: %.2f MB\n", runtime_info.binary_size / (1024.0 * 1024.0));
-    printf("note: bundle will use host php (non-portable).\n"
-           "      No upstream pre-built static PHP exists yet. To produce a hermetic\n"
-           "      PHP bundle today: build with `static-php-cli`\n"
-           "      (https://github.com/crazywhalecc/static-php-cli) and pass the\n"
-           "      resulting binary via --runtime-source. M1-D will automate this.\n");
-    result = ub_embed_runtime_single_as_tree(runtime_info.binary_path, "bin/php", output_file);
-    if (result != UB_SUCCESS) {
-        ub_runtime_info_cleanup(&runtime_info);
-        return result;
-    }
 
-    /* Continue to embed host PHP extensions as a separate post-tree section.
-     * The launcher reads tree first, then this. Extensions are still
-     * non-hermetic in this mode — same caveat as the host binary. */
-    result = php_embed_extensions(output_file);
-    if (result != UB_SUCCESS) {
-        printf("Warning: Failed to embed some PHP extensions, continuing...\n");
-    }
-#endif
-    
-    // Cleanup
+    printf("PHP directory: %s\n", php_dir);
+
+    result = php_embed_windows_runtime(php_dir, output_file);
     ub_runtime_info_cleanup(&runtime_info);
-    
-    return UB_SUCCESS;
+    return result;
+#endif
 }
 
 // Function to embed complete Windows PHP runtime
@@ -603,6 +862,12 @@ static ub_result_t php_embed_extensions(FILE* output_file) {
     return UB_SUCCESS;
 }
 
+/* TU-local handle to the active exclude list. Set by php_embed_application
+ * before the recursion starts, cleared on return. Single-threaded per build
+ * (ub_build_executable is not re-entrant), so a static is safe here. */
+static char* const* g_php_exclude_pats = NULL;
+static size_t       g_php_exclude_count = 0;
+
 // Helper function to embed all PHP files recursively
 static ub_result_t php_embed_files_recursive(const char* dir_path, const char* base_path, FILE* output_file) {
 #ifdef PLATFORM_WINDOWS
@@ -659,18 +924,27 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
         }
         
         if (S_ISDIR(st.st_mode)) {
+            /* Skip dot-dirs so .git / .composer / .idea stay out. */
+            if (entry->d_name[0] == '.') continue;
+            {
+                const char* rel_dir = full_path + strlen(base_path);
+                if (*rel_dir == '/') rel_dir++;
+                if (ub_path_excluded((const char* const*)g_php_exclude_pats,
+                                     g_php_exclude_count, rel_dir, 1)) continue;
+            }
             // Recursively process subdirectory
             php_embed_files_recursive(full_path, base_path, output_file);
         } else if (S_ISREG(st.st_mode)) {
-            // Check if it's a PHP file or other relevant file
-            const char* ext = strrchr(entry->d_name, '.');
-            if (ext && (strcmp(ext, ".php") == 0 || strcmp(ext, ".json") == 0 || strcmp(ext, ".txt") == 0 ||
-                       strcmp(ext, ".so") == 0 || strcmp(ext, ".dylib") == 0 || strcmp(ext, ".a") == 0 ||
-                       strcmp(ext, ".xml") == 0 || strcmp(ext, ".ini") == 0 || strcmp(ext, ".conf") == 0 ||
-                       strcmp(ext, ".dll") == 0)) {
+            /* M1-D: drop the extension whitelist. composer vendor/ ships
+             * .php, .json, LICENSE, README, etc.; the bundle needs all
+             * of it. Skip dotfiles to keep .gitignore / .env out. */
+            if (entry->d_name[0] == '.') continue;
+            {
                 // Calculate relative path from project root
                 const char* rel_path = full_path + strlen(base_path);
                 if (*rel_path == '/') rel_path++; // Skip leading slash
+                if (ub_path_excluded((const char* const*)g_php_exclude_pats,
+                                     g_php_exclude_count, rel_path, 0)) continue;
 #endif
                 
                 // Write file metadata: relative path length and content
@@ -712,30 +986,195 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
     return UB_SUCCESS;
 }
 
+#ifndef PLATFORM_WINDOWS
+/* M1-D composer integration: stage the project, run `composer install
+ * --no-dev`, hardlink-cache the resulting vendor/. Mirrors the Node
+ * M8-B pattern.
+ *
+ * Returns UB_SUCCESS with *out_staged set on success. *out_staged is
+ * NULL when no staging is needed (no composer.json, --no-install-deps,
+ * or composer not on PATH — non-fatal warn). */
+static ub_result_t php_maybe_stage_project_with_deps(const ub_config_t* config,
+                                                     char** out_staged) {
+    *out_staged = NULL;
+    if (!config || config->no_install_deps) return UB_SUCCESS;
+
+    char cj_path[1024];
+    char cl_path[1024];
+    snprintf(cj_path, sizeof(cj_path), "%s/composer.json", config->project_dir);
+    snprintf(cl_path, sizeof(cl_path), "%s/composer.lock", config->project_dir);
+    struct stat st;
+    if (stat(cj_path, &st) != 0 || !S_ISREG(st.st_mode)) return UB_SUCCESS;
+    int have_lock = (stat(cl_path, &st) == 0 && S_ISREG(st.st_mode));
+
+    char* composer = php_find_composer();
+    if (!composer) {
+        printf("note: composer.json found but `composer` is not on PATH;\n"
+               "      bundling project as-is. Install composer (https://getcomposer.org/)\n"
+               "      or vendor your deps manually before building.\n");
+        return UB_SUCCESS;
+    }
+
+    char* php_bin = pc_path_lookup("php");
+    if (!php_bin) { free(composer); return UB_SUCCESS; }
+
+    const char* xdg  = getenv("XDG_CACHE_HOME");
+    const char* home = getenv("HOME");
+    char stage[1024];
+    if (xdg && *xdg)        snprintf(stage, sizeof(stage), "%s/ubuilder/stage/php-app-%d",        xdg,  (int)getpid());
+    else if (home && *home) snprintf(stage, sizeof(stage), "%s/.cache/ubuilder/stage/php-app-%d", home, (int)getpid());
+    else                    snprintf(stage, sizeof(stage), "/tmp/ubuilder-php-app-%d",                  (int)getpid());
+
+    pc_remove_tree(stage);
+    printf("Staging PHP project for composer install:\n");
+    printf("  source: %s\n  stage:  %s\n", config->project_dir, stage);
+    if (pc_copy_or_link_tree(config->project_dir, stage) != 0) {
+        fprintf(stderr, "Error: failed to stage project at %s\n", stage);
+        pc_remove_tree(stage);
+        free(composer); free(php_bin);
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+
+    /* Install cache key: host PHP version is the runtime identity. */
+    char php_ver[64] = {0};
+    char* ver_argv[] = {php_bin, (char*)"-r", (char*)"echo PHP_VERSION;", NULL};
+    char* ver_captured = NULL;
+    if (pc_spawn_capture(php_bin, ver_argv, NULL, NULL, 128, &ver_captured) == 0 && ver_captured) {
+        snprintf(php_ver, sizeof(php_ver), "php-%s", ver_captured);
+    } else {
+        snprintf(php_ver, sizeof(php_ver), "php-unknown");
+    }
+    free(ver_captured);
+
+    char hex_key[65];
+    int cache_ok = (ub_install_cache_key(php_ver, cj_path,
+                                         have_lock ? cl_path : NULL,
+                                         hex_key) == 0);
+    char staged_vendor[1024];
+    snprintf(staged_vendor, sizeof(staged_vendor), "%s/vendor", stage);
+
+    if (cache_ok && ub_install_cache_lookup("php", hex_key, staged_vendor) == 0) {
+        printf("Install cache hit (php/%.12s...) — skipped composer install.\n", hex_key);
+        *out_staged = strdup(stage);
+        free(composer); free(php_bin);
+        return UB_SUCCESS;
+    }
+
+    /* Cache miss: composer install in the stage. */
+    printf("Running composer install in staged project%s\n",
+           have_lock ? " (lockfile present)" : "");
+    printf("  composer: %s\n", composer);
+
+    /* Build argv dynamically — for each --excluded `ext-<name>` we ALSO
+     * need to pass --ignore-platform-req=ext-<name> so composer doesn't
+     * abort over the missing platform requirement. */
+    static const char* base_args[] = {
+        "install", "--no-dev", "--no-interaction", "--no-progress",
+        "--prefer-dist", "--optimize-autoloader"
+    };
+    const size_t base_n = sizeof(base_args) / sizeof(base_args[0]);
+
+    /* Count platform-req flags we'll need. */
+    size_t ipr_count = 0;
+    if (config && config->exclude_count > 0) {
+        for (size_t i = 0; i < config->exclude_count; i++) {
+            const char* p = config->exclude[i];
+            if (p && strncmp(p, "ext-", 4) == 0) ipr_count++;
+        }
+    }
+
+    size_t argc_total = 1 /*composer*/ + base_n + ipr_count;
+    char**  argv     = (char**)calloc(argc_total + 1, sizeof(char*));
+    char**  to_free  = (char**)calloc(ipr_count + 1, sizeof(char*));
+    if (!argv || !to_free) {
+        free(argv); free(to_free); free(composer); free(php_bin);
+        return UB_ERROR_MEMORY_ALLOCATION;
+    }
+    size_t a = 0;
+    argv[a++] = composer;
+    for (size_t i = 0; i < base_n; i++) argv[a++] = (char*)base_args[i];
+    size_t tf = 0;
+    if (config) {
+        for (size_t i = 0; i < config->exclude_count; i++) {
+            const char* p = config->exclude[i];
+            if (!p || strncmp(p, "ext-", 4) != 0) continue;
+            char* flag = NULL;
+            int len = snprintf(NULL, 0, "--ignore-platform-req=%s", p);
+            if (len <= 0) continue;
+            flag = (char*)malloc((size_t)len + 1);
+            if (!flag) { free(argv); for (size_t k = 0; k < tf; k++) free(to_free[k]); free(to_free); free(composer); free(php_bin); return UB_ERROR_MEMORY_ALLOCATION; }
+            snprintf(flag, (size_t)len + 1, "--ignore-platform-req=%s", p);
+            argv[a++]    = flag;
+            to_free[tf++] = flag;
+            printf("  passing %s\n", flag);
+        }
+    }
+    argv[a] = NULL;
+
+    int rc = pc_spawn_and_wait(composer, argv, NULL, stage);
+    for (size_t i = 0; i < tf; i++) free(to_free[i]);
+    free(to_free);
+    free(argv);
+    free(composer); free(php_bin);
+    if (rc != 0) {
+        fprintf(stderr, "Error: composer install failed (exit %d). Bundle build aborted.\n", rc);
+        pc_remove_tree(stage);
+        return UB_ERROR_EXECUTION_FAILED;
+    }
+
+    if (cache_ok) {
+        struct stat vs;
+        if (stat(staged_vendor, &vs) == 0 && S_ISDIR(vs.st_mode)) {
+            if (ub_install_cache_store("php", hex_key, staged_vendor) == 0) {
+                printf("Install cache stored (php/%.12s...)\n", hex_key);
+            }
+        }
+    }
+
+    *out_staged = strdup(stage);
+    return UB_SUCCESS;
+}
+#endif
+
 // Embed PHP application
 static ub_result_t php_embed_application(const ub_config_t* config, FILE* output_file) {
-    const char* project_dir = config->project_dir;
     struct stat st;
 
-    // Verify project directory exists
+    /* Publish the exclude list so php_embed_files_recursive sees it. */
+    g_php_exclude_pats  = config ? config->exclude       : NULL;
+    g_php_exclude_count = config ? config->exclude_count : 0;
+
+#ifndef PLATFORM_WINDOWS
+    char* staged_project = NULL;
+    ub_result_t srcrc = php_maybe_stage_project_with_deps(config, &staged_project);
+    if (srcrc != UB_SUCCESS) return srcrc;
+    const char* project_dir = staged_project ? staged_project : config->project_dir;
+#else
+    const char* project_dir = config->project_dir;
+#endif
+
     if (stat(project_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+#ifndef PLATFORM_WINDOWS
+        if (staged_project) { pc_remove_tree(staged_project); free(staged_project); }
+#endif
         return UB_ERROR_FILE_NOT_FOUND;
     }
-    
+
     // Write number of files marker (we'll update this later if needed)
     uint32_t file_count_placeholder = 0;
-    (void)file_count_placeholder; // Suppress unused warning
-    long file_count_pos = ftell(output_file);
-    (void)file_count_pos; // Suppress unused warning
     fwrite(&file_count_placeholder, sizeof(file_count_placeholder), 1, output_file);
-    
-    // Embed all PHP and related files recursively
+
     ub_result_t result = php_embed_files_recursive(project_dir, project_dir, output_file);
-    
-    // Write end marker to indicate no more files
+
     uint32_t end_marker = 0;
     fwrite(&end_marker, sizeof(end_marker), 1, output_file);
-    
+
+#ifndef PLATFORM_WINDOWS
+    if (staged_project) { pc_remove_tree(staged_project); free(staged_project); }
+#endif
+
+    g_php_exclude_pats  = NULL;
+    g_php_exclude_count = 0;
     return result;
 }
 

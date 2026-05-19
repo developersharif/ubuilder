@@ -91,3 +91,4 @@ env/
 # ---------- Project-specific tooling ----------
 .code-review-graph/
 .claude/
+.sandbox/

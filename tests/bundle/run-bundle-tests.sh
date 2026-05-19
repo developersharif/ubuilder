@@ -498,6 +498,293 @@ for rt in "${REQUESTED[@]}"; do
     fi
 done
 
+# M1-D (PHP deps). Mirror of run_m8b_deps_case but for PHP + composer.
+# Unlike Python/Node we don't strip PATH — PHP is still host-bits hermetic
+# (no upstream prebuilt static PHP), so the bundle's bin/php links against
+# system libs and needs the host PHP shared-lib environment on $LD_LIBRARY_PATH.
+# Build-time network required (composer install pulls from packagist).
+run_m1d_php_deps_case() {
+    log ""
+    log "── php-with-deps (M1-D: composer install + install-cache) ──"
+    if ! command -v php  >/dev/null; then warn "host php missing; skipping";  return 0; fi
+    if ! command -v composer >/dev/null && ! command -v composer.phar >/dev/null; then
+        warn "composer not on PATH; skipping (install from https://getcomposer.org/)"
+        return 0
+    fi
+
+    local fdir="$FIXTURE_DIR/php-with-deps"
+    local cw="$WORK_DIR/php-with-deps"
+    mkdir -p "$cw/build" "$cw/run"
+    info "fixture: $fdir (composer.json → psr/log ^1.1)"
+
+    local ic_root="${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/install-cache/php"
+    rm -rf "$ic_root"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/build/app" \
+            >"$cw/build.log" 2>&1; then
+        fail "ubuilder build failed (see $cw/build.log)"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    ok "bundle built ($(du -h "$cw/build/app" | cut -f1))"
+    if ! grep -q "Install cache stored (php/" "$cw/build.log"; then
+        fail "build #1 did not store an install-cache entry (see $cw/build.log)"
+        return 1
+    fi
+    ok "build #1 stored install-cache entry"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/build/app2" \
+            >"$cw/build2.log" 2>&1; then
+        fail "ubuilder build #2 failed (see $cw/build2.log)"
+        sed 's/^/    /' "$cw/build2.log" | tail -n 20
+        return 1
+    fi
+    if ! grep -q "Install cache hit (php/" "$cw/build2.log"; then
+        fail "build #2 missed the install cache (see $cw/build2.log)"
+        return 1
+    fi
+    if grep -qE "^Running composer install" "$cw/build2.log"; then
+        fail "build #2 ran composer install despite cache hit"
+        return 1
+    fi
+    ok "build #2 hit install cache (no composer install run)"
+
+    cp "$cw/build/app" "$cw/run/app"
+    chmod +x "$cw/run/app"
+
+    local exit_code=0
+    ( cd "$cw/run" && ./app "hello world" "it's" "ok" ) \
+        >"$cw/stdout.txt" 2>"$cw/stderr.txt" || exit_code=$?
+
+    local rc=0
+    if (( exit_code != 0 )); then
+        fail "exit $exit_code (expected 0)"
+        sed 's/^/    [stderr] /' "$cw/stderr.txt" | tail -n 10
+        rc=1
+    fi
+    if ! diff -u "$fdir/expected.txt" "$cw/stdout.txt" >"$cw/stdout.diff" 2>&1; then
+        fail "stdout differs"
+        sed 's/^/    /' "$cw/stdout.diff" | head -n 30
+        rc=1
+    fi
+
+    # Staging promise: composer must run in the stage copy, never in $fdir.
+    # If vendor/ shows up under the user's project dir the staging path
+    # is broken and we'd be polluting the user's source tree.
+    if [[ -e "$fdir/vendor" ]]; then
+        fail "user project was polluted: $fdir/vendor exists — staging did not isolate"
+        rc=1
+    fi
+    if [[ -e "$fdir/composer.lock" ]]; then
+        fail "user project was polluted: $fdir/composer.lock written back — staging did not isolate"
+        rc=1
+    fi
+
+    if (( rc == 0 )); then
+        ok "bundle loads vendor/autoload.php, instantiates Psr\\Log\\NullLogger, user project untouched"
+    fi
+    return $rc
+}
+
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "php" ]]; then
+        run_m1d_php_deps_case || ((failures++))
+        break
+    fi
+done
+
+# M1-D negative path. If composer.json declares an `ext-*` that the host's
+# extension_dir doesn't ship, php_stage_synthetic_runtime aborts with a
+# precise error + apt/dnf install hint. Host-deterministic: we pick an
+# obviously-fake name so this fires every time.
+run_m1d_php_missing_ext_case() {
+    log ""
+    log "── php-missing-ext (M1-D: missing-extension error has install hint) ──"
+    if ! command -v php >/dev/null; then warn "host php missing; skipping"; return 0; fi
+
+    local fdir="$FIXTURE_DIR/php-missing-ext"
+    local cw="$WORK_DIR/php-missing-ext"
+    mkdir -p "$cw/build"
+    info "fixture: $fdir (composer.json → ext-ubuilder_intentionally_missing)"
+
+    local exit_code=0
+    "$UBUILDER_BIN" \
+        --project-dir="$fdir" \
+        --output="$cw/build/app" \
+        >"$cw/build.log" 2>&1 || exit_code=$?
+
+    local rc=0
+    if (( exit_code == 0 )); then
+        fail "build succeeded but should have failed (declared ext is absent)"
+        rc=1
+    fi
+    if ! grep -q "composer.json declares ext-ubuilder_intentionally_missing" "$cw/build.log"; then
+        fail "build log missing the 'composer.json declares ext-X' line"
+        sed 's/^/    /' "$cw/build.log" | tail -n 15
+        rc=1
+    fi
+    if ! grep -q "sudo apt install php-ubuilder_intentionally_missing" "$cw/build.log"; then
+        fail "build log missing the apt-install hint with package name"
+        sed 's/^/    /' "$cw/build.log" | tail -n 15
+        rc=1
+    fi
+    if ! grep -q "sudo dnf install php-ubuilder_intentionally_missing" "$cw/build.log"; then
+        fail "build log missing the dnf-install hint with package name"
+        rc=1
+    fi
+    # Stage cleanup promise: the staging dir under XDG_CACHE_HOME / HOME
+    # must be removed by php_embed_runtime before returning. (We can't
+    # know the exact pid-suffixed name, so we just check the parent dir
+    # contains no `php-rt-*` leftovers from this test.)
+    local stage_parent="${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/stage"
+    if [[ -d "$stage_parent" ]] && find "$stage_parent" -maxdepth 1 -name 'php-rt-*' -type d 2>/dev/null | grep -q .; then
+        fail "staging dir leaked at $stage_parent/php-rt-*"
+        rc=1
+    fi
+
+    if (( rc == 0 )); then
+        ok "build aborts with composer.json line + apt + dnf install hints; no staging leak"
+    fi
+    return $rc
+}
+
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "php" ]]; then
+        run_m1d_php_missing_ext_case || ((failures++))
+        break
+    fi
+done
+
+# Excluding a missing ext via --exclude should turn the previous case's
+# hard failure into a successful build. Proves the exclude pipeline runs
+# before php_stage_synthetic_runtime's missing-extension check.
+run_m1d_php_exclude_ext_case() {
+    log ""
+    log "── php-exclude-ext (--exclude=ext-X drops composer-declared ext) ──"
+    if ! command -v php >/dev/null; then warn "host php missing; skipping"; return 0; fi
+
+    local fdir="$FIXTURE_DIR/php-missing-ext"
+    local cw="$WORK_DIR/php-exclude-ext"
+    mkdir -p "$cw/build"
+    info "fixture: $fdir + --exclude=ext-ubuilder_intentionally_missing"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --exclude=ext-ubuilder_intentionally_missing \
+            --output="$cw/build/app" \
+            >"$cw/build.log" 2>&1; then
+        fail "build failed even with --exclude for the missing ext"
+        sed 's/^/    /' "$cw/build.log" | tail -n 15
+        return 1
+    fi
+    if ! grep -q "ubuilder_intentionally_missing (excluded by config; not staged)" "$cw/build.log"; then
+        fail "build log missing the 'excluded by config' notice"
+        sed 's/^/    /' "$cw/build.log" | tail -n 15
+        return 1
+    fi
+    if grep -q "composer.json declares ext-ubuilder_intentionally_missing but no" "$cw/build.log"; then
+        fail "exclude did not run before the missing-ext check"
+        return 1
+    fi
+    ok "build succeeds with --exclude; staging skips the absent ext entirely"
+    return 0
+}
+
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "php" ]]; then
+        run_m1d_php_exclude_ext_case || ((failures++))
+        break
+    fi
+done
+
+# Auto-config-write: a first build with no ubuilder.json (only CLI flags)
+# must write a ubuilder.json into the project dir capturing runtime,
+# entry_point, and --exclude entries. A second build with no flags must
+# pick that file up and succeed. File-glob exclusion is asserted via the
+# CLI write-up — actually inspecting the bundle for the excluded path
+# requires extracting the launcher, which is outside the harness's scope.
+run_m1d_php_autoconfig_case() {
+    log ""
+    log "── php-autoconfig (auto-write ubuilder.json + --exclude file globs) ──"
+    if ! command -v php >/dev/null; then warn "host php missing; skipping"; return 0; fi
+
+    local src="$FIXTURE_DIR/php"
+    local cw="$WORK_DIR/php-autoconfig"
+    mkdir -p "$cw/build"
+    cp -r "$src" "$cw/proj"
+    rm "$cw/proj/ubuilder.json"           # "first build" — no config yet
+    mkdir -p "$cw/proj/tests"
+    echo "scratch" > "$cw/proj/tests/scratch.txt"
+    echo "# doc" > "$cw/proj/README.md"
+
+    info "first build via CLI flags only, expect auto-gen of ubuilder.json"
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$cw/proj" \
+            --runtime=php \
+            --entry-point=main.php \
+            --output="$cw/build/app" \
+            --exclude='tests/**' \
+            --exclude='*.md' \
+            >"$cw/build1.log" 2>&1; then
+        fail "first build failed"
+        sed 's/^/    /' "$cw/build1.log" | tail -n 15
+        return 1
+    fi
+    if [[ ! -f "$cw/proj/ubuilder.json" ]]; then
+        fail "ubuilder.json was NOT written to the project dir"
+        return 1
+    fi
+    if ! grep -q "wrote $cw/proj/ubuilder.json" "$cw/build1.log"; then
+        fail "build log missing the 'wrote ubuilder.json' notice"
+        return 1
+    fi
+    if ! grep -q '"runtime": "php"' "$cw/proj/ubuilder.json"; then
+        fail "auto ubuilder.json missing runtime entry"
+        cat "$cw/proj/ubuilder.json"
+        return 1
+    fi
+    if ! grep -q '"entry_point": "main.php"' "$cw/proj/ubuilder.json"; then
+        fail "auto ubuilder.json missing entry_point"
+        cat "$cw/proj/ubuilder.json"
+        return 1
+    fi
+    if ! grep -q 'tests/' "$cw/proj/ubuilder.json" || ! grep -q '\.md' "$cw/proj/ubuilder.json"; then
+        fail "auto ubuilder.json missing exclude entries"
+        cat "$cw/proj/ubuilder.json"
+        return 1
+    fi
+    ok "first build wrote ubuilder.json with runtime, entry_point, and exclude"
+
+    info "second build with no CLI flags, expect config pickup"
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$cw/proj" \
+            --output="$cw/build/app2" \
+            >"$cw/build2.log" 2>&1; then
+        fail "second build (config-only) failed"
+        sed 's/^/    /' "$cw/build2.log" | tail -n 15
+        return 1
+    fi
+    # And ubuilder.json should NOT be rewritten on the second build —
+    # auto-write is first-build-only.
+    if grep -q "wrote $cw/proj/ubuilder.json" "$cw/build2.log"; then
+        fail "second build overwrote ubuilder.json (should be no-op when present)"
+        return 1
+    fi
+    ok "second build reuses the auto-written config and does not overwrite it"
+    return 0
+}
+
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "php" ]]; then
+        run_m1d_php_autoconfig_case || ((failures++))
+        break
+    fi
+done
+
 log ""
 if (( failures == 0 )); then
     log "${C_GRN}all bundle tests passed${C_RST}"

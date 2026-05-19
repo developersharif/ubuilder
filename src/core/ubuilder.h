@@ -86,6 +86,15 @@ typedef struct {
      * spawn vendor-runtimes.sh" path. Useful in CI where the cache is
      * pre-populated and we want to fail loudly on a miss. */
     int   no_auto_vendor;
+    /* Glob patterns and/or `ext-<name>` tokens to omit from the bundle.
+     * Applied in two places:
+     *   - app file recursion (every runtime): paths matching any pattern
+     *     are skipped — see src/core/glob_match.h for matcher semantics.
+     *   - PHP extension staging: `ext-<name>` (or bare `<name>`) drops the
+     *     declared composer ext-* entry before staging the .so.
+     * Owned by the config; freed by free_config in main.c. */
+    char** exclude;
+    size_t exclude_count;
 } ub_config_t;
 
 // Embedded resource structure

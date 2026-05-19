@@ -1,0 +1,8 @@
+{
+    "name": "ubuilder/php-missing-ext-fixture",
+    "description": "Bundle test fixture: declares an intentionally-absent ext-* so the M1-D missing-extension error path fires deterministically on every host.",
+    "require": {
+        "php": ">=7.4",
+        "ext-ubuilder_intentionally_missing": "*"
+    }
+}

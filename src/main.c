@@ -19,6 +19,7 @@ static struct option long_options[] = {
     {"use-host-runtime",  no_argument,       0,  3 },
     {"no-install-deps",   no_argument,       0,  4 },
     {"no-auto-vendor",    no_argument,       0,  5 },
+    {"exclude",           required_argument, 0,  6 },
     {"gui",               no_argument,       0, 'g'},
     {"verbose",     no_argument,       0, 'v'},
     {"help",        no_argument,       0, 'h'},
@@ -26,6 +27,25 @@ static struct option long_options[] = {
     {0, 0, 0, 0}
 };
 #endif
+
+/* Append one --exclude argument to config->exclude. Bumps presence so the
+ * config-file layer knows to merge rather than overwrite. */
+static int append_exclude(ub_config_t* config, ub_cli_presence_t* presence,
+                          const char* value) {
+    if (!value || !*value) {
+        fprintf(stderr, "Error: --exclude requires a non-empty pattern\n");
+        return -1;
+    }
+    size_t n = config->exclude_count;
+    char** grown = (char**)realloc(config->exclude, (n + 1) * sizeof(char*));
+    if (!grown) return -1;
+    grown[n] = strdup(value);
+    if (!grown[n]) { config->exclude = grown; return -1; }
+    config->exclude = grown;
+    config->exclude_count = n + 1;
+    presence->exclude = 1;
+    return 0;
+}
 
 static void print_usage(const char* program_name) {
     printf("UBuilder - Universal Executable Framework\n");
@@ -51,6 +71,9 @@ static void print_usage(const char* program_name) {
     printf("                            staged copy of the vendored runtime before bundling.\n");
     printf("      --no-auto-vendor      Don't auto-spawn scripts/vendor-runtimes.sh when the\n");
     printf("                            cache is empty. Default: vendor automatically on miss.\n");
+    printf("      --exclude PATTERN     Drop a file glob or PHP `ext-<name>` from the bundle.\n");
+    printf("                            Repeatable. Appends to ubuilder.json's \"exclude\" array.\n");
+    printf("                            Globs: * (one segment), ** (cross /), ?, [abc], [a-z].\n");
     printf("  -g, --gui                 Enable GUI support\n");
     printf("  -v, --verbose             Enable verbose output\n");
     printf("  -h, --help                Show this help message\n");
@@ -134,6 +157,11 @@ static ub_result_t parse_arguments(int argc, char* argv[],
         } else if (strcmp(arg, "--no-auto-vendor") == 0) {
             config->no_auto_vendor = 1;
             presence->no_auto_vendor = 1;
+        } else if (strcmp(arg, "--exclude") == 0) {
+            if (i + 1 >= argc) { fprintf(stderr, "Error: --exclude requires an argument\n"); return UB_ERROR_INVALID_ARGS; }
+            if (append_exclude(config, presence, argv[++i]) != 0) return UB_ERROR_MEMORY_ALLOCATION;
+        } else if (strncmp(arg, "--exclude=", 10) == 0) {
+            if (append_exclude(config, presence, arg + 10) != 0) return UB_ERROR_INVALID_ARGS;
         } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
             presence->gui = 1;
@@ -195,6 +223,10 @@ static ub_result_t parse_arguments(int argc, char* argv[],
                 config->no_auto_vendor = 1;
                 presence->no_auto_vendor = 1;
                 break;
+            case 6: /* --exclude */
+                if (append_exclude(config, presence, optarg) != 0)
+                    return UB_ERROR_MEMORY_ALLOCATION;
+                break;
             case 'g':
                 config->enable_gui = 1;
                 presence->gui = 1;
@@ -243,6 +275,8 @@ static void free_config(ub_config_t* config) {
     free(config->output_path);
     free(config->entry_point);
     free(config->runtime_source);
+    for (size_t i = 0; i < config->exclude_count; i++) free(config->exclude[i]);
+    free(config->exclude);
     memset(config, 0, sizeof(*config));
 }
 
@@ -333,6 +367,13 @@ int main(int argc, char* argv[]) {
         free(config_path);
         ub_cleanup();
         return EXIT_FAILURE;
+    }
+
+    /* Auto-generate ubuilder.json on first build (no-op if it already
+     * exists). Captures the runtime/entry_point/exclude values actually
+     * used, so the next build picks them up with no flags. */
+    if (!cfg_file) {
+        ub_config_write_if_missing(&config);
     }
 
     if (config.verbose) {

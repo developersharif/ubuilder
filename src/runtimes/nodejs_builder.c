@@ -1,6 +1,7 @@
 #include "runtime_builder.h"
 #include "runtime_embedder.h"
 #include "../core/platform_compat.h"
+#include "../core/glob_match.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -145,6 +146,11 @@ static ub_result_t nodejs_embed_runtime(const ub_config_t* config, FILE* output_
     return result;
 }
 
+/* TU-local exclude state — published by nodejs_embed_application around
+ * the recursion. Single-threaded per build; safe. */
+static char* const* g_node_exclude_pats = NULL;
+static size_t       g_node_exclude_count = 0;
+
 // Helper function to embed all Node.js files recursively
 static ub_result_t nodejs_embed_files_recursive(const char* dir_path, const char* base_path, FILE* output_file) {
 #ifdef PLATFORM_WINDOWS
@@ -198,6 +204,12 @@ static ub_result_t nodejs_embed_files_recursive(const char* dir_path, const char
         }
         
         if (S_ISDIR(st.st_mode)) {
+            {
+                const char* rel_dir = full_path + strlen(base_path);
+                if (*rel_dir == '/') rel_dir++;
+                if (ub_path_excluded((const char* const*)g_node_exclude_pats,
+                                     g_node_exclude_count, rel_dir, 1)) continue;
+            }
             // Recursively process subdirectory
             nodejs_embed_files_recursive(full_path, base_path, output_file);
         } else if (S_ISREG(st.st_mode)) {
@@ -210,6 +222,8 @@ static ub_result_t nodejs_embed_files_recursive(const char* dir_path, const char
                 // Calculate relative path from project root
                 const char* rel_path = full_path + strlen(base_path);
                 if (*rel_path == '/') rel_path++; // Skip leading slash
+                if (ub_path_excluded((const char* const*)g_node_exclude_pats,
+                                     g_node_exclude_count, rel_path, 0)) continue;
 #endif
                 
                 // Write file metadata: relative path length and content
@@ -403,6 +417,9 @@ static ub_result_t nodejs_maybe_stage_project_with_deps(const ub_config_t* confi
 static ub_result_t nodejs_embed_application(const ub_config_t* config, FILE* output_file) {
     struct stat st;
 
+    g_node_exclude_pats  = config ? config->exclude       : NULL;
+    g_node_exclude_count = config ? config->exclude_count : 0;
+
 #ifndef PLATFORM_WINDOWS
     char* staged_project = NULL;
     ub_result_t srcrc = nodejs_maybe_stage_project_with_deps(config, &staged_project);
@@ -430,6 +447,9 @@ static ub_result_t nodejs_embed_application(const ub_config_t* config, FILE* out
 #ifndef PLATFORM_WINDOWS
     if (staged_project) { pc_remove_tree(staged_project); free(staged_project); }
 #endif
+
+    g_node_exclude_pats  = NULL;
+    g_node_exclude_count = 0;
     return result;
 }
 

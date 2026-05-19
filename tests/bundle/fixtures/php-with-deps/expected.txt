@@ -1,0 +1,3 @@
+ubuilder:m1d-php:hello
+argv:hello world,it's,ok
+psr-log-nulllogger:true

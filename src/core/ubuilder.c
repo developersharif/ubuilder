@@ -464,13 +464,18 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime,
     if (rt_slash) *rt_slash = '\0'; else strcpy(runtime_dir, ".");
 
     /* Build argv array. Owned heap-side so the loop bound (argc) doesn't
-     * leak into a fixed buffer. */
-    int    extra = (runtime == UB_RUNTIME_PHP) ? 4 : 2;  /* exe + maybe ["-c","ini"] + script + NULL */
+     * leak into a fixed buffer.
+     *
+     * PHP slot accounting:
+     *   exe + "-c" + ini + "-d" + extension_dir=... + script + NULL = 6 extra
+     */
+    int    extra = (runtime == UB_RUNTIME_PHP) ? 6 : 2;
     int    user  = (argc > 1) ? (argc - 1) : 0;
     char** spawn_argv = (char**)calloc((size_t)(extra + user + 1), sizeof(char*));
     if (!spawn_argv) return -1;
 
     char php_ini_path[1024];
+    char php_ext_dir_arg[1280];
     int  ai = 0;
     spawn_argv[ai++] = (char*)runtime_binary_path;
     if (runtime == UB_RUNTIME_PHP) {
@@ -481,6 +486,30 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime,
 #endif
         spawn_argv[ai++] = (char*)"-c";
         spawn_argv[ai++] = php_ini_path;
+
+        /* M1-D: synthetic-tree layout puts extensions at <tree-root>/ext.
+         * runtime_dir here is <tree-root>/bin (parent of bin/php). Resolve
+         * the sibling ext/ dir and pass it as -d extension_dir=<abspath>
+         * so the extension= lines in php.ini resolve correctly. */
+        char tree_root[1024];
+        if (strlen(runtime_dir) < sizeof(tree_root)) {
+            strcpy(tree_root, runtime_dir);
+#ifdef PLATFORM_WINDOWS
+            char* tr_slash = strrchr(tree_root, '\\');
+#else
+            char* tr_slash = strrchr(tree_root, '/');
+#endif
+            if (tr_slash) *tr_slash = '\0';
+#ifdef PLATFORM_WINDOWS
+            snprintf(php_ext_dir_arg, sizeof(php_ext_dir_arg),
+                     "extension_dir=%s\\ext", tree_root);
+#else
+            snprintf(php_ext_dir_arg, sizeof(php_ext_dir_arg),
+                     "extension_dir=%s/ext", tree_root);
+#endif
+            spawn_argv[ai++] = (char*)"-d";
+            spawn_argv[ai++] = php_ext_dir_arg;
+        }
     }
     spawn_argv[ai++] = script_name;
     for (int i = 1; i < argc; i++) spawn_argv[ai++] = argv[i];

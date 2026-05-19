@@ -223,6 +223,93 @@ ub_result_t ub_config_load(const char* explicit_path,
     return UB_SUCCESS;
 }
 
+/* Escape a string for JSON output. Writes to fp. */
+static void json_escape_to(FILE* fp, const char* s) {
+    fputc('"', fp);
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+        switch (*p) {
+            case '"':  fputs("\\\"", fp); break;
+            case '\\': fputs("\\\\", fp); break;
+            case '\n': fputs("\\n", fp);  break;
+            case '\r': fputs("\\r", fp);  break;
+            case '\t': fputs("\\t", fp);  break;
+            case '\b': fputs("\\b", fp);  break;
+            case '\f': fputs("\\f", fp);  break;
+            default:
+                if (*p < 0x20) fprintf(fp, "\\u%04x", *p);
+                else fputc(*p, fp);
+        }
+    }
+    fputc('"', fp);
+}
+
+/* Basename of a path (returns pointer into the input). */
+static const char* path_basename(const char* p) {
+    if (!p) return "";
+    const char* slash = NULL;
+    for (const char* q = p; *q; q++) {
+        if (*q == '/' || *q == '\\') slash = q;
+    }
+    return slash ? slash + 1 : p;
+}
+
+ub_result_t ub_config_write_if_missing(const ub_config_t* cfg) {
+    if (!cfg || !cfg->project_dir) return UB_SUCCESS;
+
+    char* target = join_path(cfg->project_dir, "ubuilder.json");
+    if (!target) return UB_ERROR_MEMORY_ALLOCATION;
+
+    if (file_exists(target)) {
+        free(target);
+        return UB_SUCCESS;
+    }
+
+    FILE* fp = fopen(target, "wb");
+    if (!fp) {
+        fprintf(stderr, "note: could not write %s (build succeeded anyway)\n", target);
+        free(target);
+        return UB_ERROR_FILE_NOT_FOUND;
+    }
+
+    const char* rt =
+        cfg->runtime == UB_RUNTIME_PYTHON ? "python" :
+        cfg->runtime == UB_RUNTIME_PHP    ? "php"    :
+        cfg->runtime == UB_RUNTIME_NODEJS ? "node"   : NULL;
+
+    fputs("{\n", fp);
+    fputs("  \"schema_version\": 1,\n", fp);
+    fprintf(fp, "  \"name\": ");
+    json_escape_to(fp, path_basename(cfg->output_path ? cfg->output_path : "app"));
+    fputs(",\n", fp);
+    if (rt) {
+        fprintf(fp, "  \"runtime\": ");
+        json_escape_to(fp, rt);
+        fputs(",\n", fp);
+    }
+    if (cfg->entry_point) {
+        fprintf(fp, "  \"entry_point\": ");
+        json_escape_to(fp, cfg->entry_point);
+        fputs(",\n", fp);
+    }
+    if (cfg->exclude_count > 0) {
+        fputs("  \"exclude\": [", fp);
+        for (size_t i = 0; i < cfg->exclude_count; i++) {
+            if (i > 0) fputs(", ", fp);
+            json_escape_to(fp, cfg->exclude[i]);
+        }
+        fputs("],\n", fp);
+    }
+    /* Trailing key with no comma — we always write it for valid JSON. */
+    fputs("  \"_generated_by\": \"ubuilder first build\"\n", fp);
+    fputs("}\n", fp);
+    fclose(fp);
+
+    printf("note: wrote %s (captured from this build; edit to customize, "
+           "subsequent builds will use it)\n", target);
+    free(target);
+    return UB_SUCCESS;
+}
+
 ub_result_t ub_config_apply(const ub_config_file_t*  file,
                             const ub_cli_presence_t* presence,
                             ub_config_t*             cfg) {
@@ -350,8 +437,39 @@ ub_result_t ub_config_apply(const ub_config_file_t*  file,
         }
     }
 
+    /* exclude: array of glob patterns and/or `ext-<name>` tokens. Appends
+     * to whatever the CLI's --exclude flags already populated. */
+    if (1) {
+        const json_value_t* v = json_obj_get(file->root, "exclude");
+        if (v) {
+            if (v->type != JSON_ARRAY) {
+                fprintf(stderr, "%s:%d:%d: \"exclude\" must be an array of strings\n",
+                        file->path, v->line, v->col);
+                return UB_ERROR_INVALID_ARGS;
+            }
+            size_t add = v->v.arr.count;
+            if (add > 0) {
+                size_t new_count = cfg->exclude_count + add;
+                char** grown = (char**)realloc(cfg->exclude, new_count * sizeof(char*));
+                if (!grown) return UB_ERROR_MEMORY_ALLOCATION;
+                cfg->exclude = grown;
+                for (size_t i = 0; i < add; i++) {
+                    const json_value_t* item = v->v.arr.items[i];
+                    if (!item || item->type != JSON_STRING) {
+                        fprintf(stderr, "%s:%d:%d: \"exclude[%zu]\" must be a string\n",
+                                file->path, item->line, item->col, i);
+                        return UB_ERROR_INVALID_ARGS;
+                    }
+                    char* s = dup_str(item->v.str.s);
+                    if (!s) return UB_ERROR_MEMORY_ALLOCATION;
+                    cfg->exclude[cfg->exclude_count++] = s;
+                }
+            }
+        }
+    }
+
     /* Honestly flag keys we parse but don't yet honor in the build pipeline. */
-    static const char* ignored[] = { "include", "exclude", "build", NULL };
+    static const char* ignored[] = { "include", "build", NULL };
     for (size_t i = 0; ignored[i]; i++) {
         if (json_obj_get(file->root, ignored[i]) && cfg->verbose) {
             fprintf(stderr, "note: %s: \"%s\" is parsed but not yet honored by the build\n",

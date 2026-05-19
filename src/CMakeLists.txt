@@ -6,6 +6,8 @@ add_library(ubuilder_core STATIC
     core/json_mini.h
     core/config.c
     core/config.h
+    core/glob_match.c
+    core/glob_match.h
     core/platform_compat.c
     core/platform_compat.h
     core/sha256.c

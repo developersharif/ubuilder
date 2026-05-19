@@ -1,6 +1,7 @@
 #include "runtime_builder.h"
 #include "runtime_embedder.h"
 #include "../core/platform_compat.h"
+#include "../core/glob_match.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -382,6 +383,11 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
     return result;
 }
 
+/* TU-local exclude state — published by python_embed_application around
+ * the recursion. Single-threaded per build; safe. */
+static char* const* g_py_exclude_pats = NULL;
+static size_t       g_py_exclude_count = 0;
+
 // Helper function to embed all Python files recursively
 static ub_result_t python_embed_files_recursive(const char* dir_path, const char* base_path, FILE* output_file) {
 #ifdef PLATFORM_WINDOWS
@@ -435,6 +441,12 @@ static ub_result_t python_embed_files_recursive(const char* dir_path, const char
         }
         
         if (S_ISDIR(st.st_mode)) {
+            {
+                const char* rel_dir = full_path + strlen(base_path);
+                if (*rel_dir == '/') rel_dir++;
+                if (ub_path_excluded((const char* const*)g_py_exclude_pats,
+                                     g_py_exclude_count, rel_dir, 1)) continue;
+            }
             // Recursively process subdirectory
             python_embed_files_recursive(full_path, base_path, output_file);
         } else if (S_ISREG(st.st_mode)) {
@@ -444,6 +456,8 @@ static ub_result_t python_embed_files_recursive(const char* dir_path, const char
                 // Calculate relative path from project root
                 const char* rel_path = full_path + strlen(base_path);
                 if (*rel_path == '/') rel_path++; // Skip leading slash
+                if (ub_path_excluded((const char* const*)g_py_exclude_pats,
+                                     g_py_exclude_count, rel_path, 0)) continue;
 #endif
                 
                 // Write file metadata: relative path length and content
@@ -490,6 +504,9 @@ static ub_result_t python_embed_application(const ub_config_t* config, FILE* out
     const char* project_dir = config->project_dir;
     struct stat st;
 
+    g_py_exclude_pats  = config ? config->exclude       : NULL;
+    g_py_exclude_count = config ? config->exclude_count : 0;
+
     // Verify project directory exists
     if (stat(project_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
         return UB_ERROR_FILE_NOT_FOUND;
@@ -504,11 +521,13 @@ static ub_result_t python_embed_application(const ub_config_t* config, FILE* out
     
     // Embed all Python and related files recursively
     ub_result_t result = python_embed_files_recursive(project_dir, project_dir, output_file);
-    
+
     // Write end marker to indicate no more files
     uint32_t end_marker = 0;
     fwrite(&end_marker, sizeof(end_marker), 1, output_file);
-    
+
+    g_py_exclude_pats  = NULL;
+    g_py_exclude_count = 0;
     return result;
 }
 

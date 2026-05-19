@@ -1,0 +1,5 @@
+{
+  "name": "php-missing-ext-fixture",
+  "runtime": "php",
+  "entry_point": "main.php"
+}
