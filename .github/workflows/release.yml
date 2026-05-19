@@ -199,8 +199,8 @@ jobs:
         if: matrix.platform != 'windows'
         run: |
           echo "Building UBuilder for ${{ matrix.platform }}"
-          chmod +x build-all.sh
-          ./build-all.sh
+          chmod +x scripts/build-all.sh
+          ./scripts/build-all.sh
 
       - name: Build UBuilder (Windows)
         if: matrix.platform == 'windows'

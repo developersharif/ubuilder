@@ -26,10 +26,14 @@ jobs:
         run: |
           echo "=== Validating Bash Scripts ==="
 
-          # Check main build scripts
-          if [ -f "build-all.sh" ]; then
-            echo "Checking build-all.sh..."
-            shellcheck build-all.sh || echo "⚠️  build-all.sh has warnings"
+          # Check main build scripts (moved under scripts/ in v2.2.0)
+          if [ -f "scripts/build-all.sh" ]; then
+            echo "Checking scripts/build-all.sh..."
+            shellcheck scripts/build-all.sh || echo "⚠️  scripts/build-all.sh has warnings"
+          fi
+          if [ -f "scripts/create-release.sh" ]; then
+            echo "Checking scripts/create-release.sh..."
+            shellcheck scripts/create-release.sh || echo "⚠️  scripts/create-release.sh has warnings"
           fi
 
           # Check example build scripts

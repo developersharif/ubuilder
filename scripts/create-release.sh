@@ -2,14 +2,21 @@
 # UBuilder Release Creation Script
 #
 # Usage:
-#   ./create-release.sh <version> [message]              # cut a real release
-#   ./create-release.sh <version> [message] --dry-run    # show what would happen
+#   scripts/create-release.sh <version> [message]              # cut a real release
+#   scripts/create-release.sh <version> [message] --dry-run    # show what would happen
 #
 # Examples:
-#   ./create-release.sh v2.1.0 "exclude feature + auto-config"
-#   ./create-release.sh v2.0.2 "Bug fixes" --dry-run
+#   scripts/create-release.sh v2.2.0 "self-update + quiet output + ..."
+#   scripts/create-release.sh v2.0.2 "Bug fixes" --dry-run
 
 set -e
+
+# Resolve repo root and cd there so the path-relative seds against
+# CMakeLists.txt / src/core/ubuilder.h / CHANGELOG.md all work whether
+# you invoked us as ./scripts/create-release.sh, ../scripts/..., etc.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 # Colors for output
 RED='\033[0;31m'

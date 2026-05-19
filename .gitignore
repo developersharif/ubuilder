@@ -92,3 +92,4 @@ env/
 .code-review-graph/
 .claude/
 .sandbox/
+CLAUDE.md

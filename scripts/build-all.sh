@@ -6,6 +6,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Script lives under scripts/; the repo root is one level up.
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -38,7 +40,7 @@ echo
 case $PLATFORM in
     "linux"|"macos"|"unknown")
         # Run the examples build script which handles everything
-        if "${SCRIPT_DIR}/examples/build-examples.sh"; then
+        if "${REPO_ROOT}/examples/build-examples.sh"; then
             echo
             echo -e "${GREEN}✅ All UBuilder projects built and tested successfully!${NC}"
             echo -e "${GREEN}   Check the examples/output/ directory for generated executables.${NC}"

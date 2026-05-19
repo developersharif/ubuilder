@@ -269,7 +269,7 @@ Full schema (every field optional except `runtime` + `entry_point`):
 - **CLI flags override config keys** — except `--exclude`, which **appends** to the config's `exclude` array.
 - **Auto-write**: a successful build with no `ubuilder.json` writes one with the resolved `runtime`, `entry_point`, `name`, and `exclude`. The next `ubuilder` run needs no flags.
 
-Full schema docs: [`docs/architecture/CONFIG_FILE_SPEC.md`](docs/architecture/CONFIG_FILE_SPEC.md).
+Full schema docs: [`docs/internals/architecture/CONFIG_FILE_SPEC.md`](docs/internals/architecture/CONFIG_FILE_SPEC.md).
 
 ---
 
@@ -309,7 +309,7 @@ The zero-flag path is the default. Pass these for non-default cases:
 - **PHP on macOS**: M1-D's synthetic-runtime path assumes Linux's `extension_dir` layout; Homebrew PHP's Cellar isn't handled yet. `examples/build-examples-macos.sh` skips the PHP example cleanly with a message.
 - **Windows runtimes**: bundles use the host's `python.exe` / `node.exe` / `php.exe` rather than a vendored hermetic tree. Hermetic Windows is roadmap work.
 
-Full roadmap: [`docs/architecture/ROADMAP_NEXT.md`](docs/architecture/ROADMAP_NEXT.md).
+Full roadmap: [`docs/internals/architecture/ROADMAP_NEXT.md`](docs/internals/architecture/ROADMAP_NEXT.md).
 
 ---
 
@@ -325,11 +325,11 @@ User dependencies (`requirements.txt`, `package.json`, `composer.json`) are inst
 
 Deep dives:
 
-- [`docs/architecture/ARCHITECTURE_AUDIT.md`](docs/architecture/ARCHITECTURE_AUDIT.md) — engineering audit + hermeticity principles
-- [`docs/architecture/M1_HERMETIC_INTERPRETERS.md`](docs/architecture/M1_HERMETIC_INTERPRETERS.md) — vendoring strategy + `--runtime-source` precedence
-- [`docs/architecture/M8_USER_DEPS.md`](docs/architecture/M8_USER_DEPS.md) — per-runtime dep-install mechanics
-- [`docs/architecture/CONFIG_FILE_SPEC.md`](docs/architecture/CONFIG_FILE_SPEC.md) — full `ubuilder.json` schema
-- [`docs/architecture/STATIC_LAUNCHER.md`](docs/architecture/STATIC_LAUNCHER.md) — `-DUBUILDER_STATIC=ON` for a fully static launcher (musl toolchain provided)
+- [`docs/internals/architecture/ARCHITECTURE_AUDIT.md`](docs/internals/architecture/ARCHITECTURE_AUDIT.md) — engineering audit + hermeticity principles
+- [`docs/internals/architecture/M1_HERMETIC_INTERPRETERS.md`](docs/internals/architecture/M1_HERMETIC_INTERPRETERS.md) — vendoring strategy + `--runtime-source` precedence
+- [`docs/internals/architecture/M8_USER_DEPS.md`](docs/internals/architecture/M8_USER_DEPS.md) — per-runtime dep-install mechanics
+- [`docs/internals/architecture/CONFIG_FILE_SPEC.md`](docs/internals/architecture/CONFIG_FILE_SPEC.md) — full `ubuilder.json` schema
+- [`docs/internals/architecture/STATIC_LAUNCHER.md`](docs/internals/architecture/STATIC_LAUNCHER.md) — `-DUBUILDER_STATIC=ON` for a fully static launcher (musl toolchain provided)
 
 ---
 

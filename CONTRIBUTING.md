@@ -47,7 +47,7 @@ ubuilder/
 
 ## Development Phases
 
-The project is currently organized into phases as outlined in [docs/guides/project-instructions.md](docs/guides/project-instructions.md):
+The project is currently organized into phases as outlined in [docs/user/guides/project-instructions.md](docs/user/guides/project-instructions.md):
 
 - **Phase 1**: Foundation (Current) - Basic embedding and Python runtime
 - **Phase 2**: Multi-Platform Support

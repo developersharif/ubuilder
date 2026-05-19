@@ -44,13 +44,13 @@ jobs:
 
       - name: Make build scripts executable
         run: |
-          chmod +x build-all.sh
+          chmod +x scripts/build-all.sh
           chmod +x examples/build-examples*.sh
           chmod +x examples/build-examples.sh
 
       - name: Run cross-platform build system
         run: |
-          ./build-all.sh
+          ./scripts/build-all.sh
 
       - name: Remove runtime dependencies and test portability
         run: |
@@ -363,12 +363,12 @@ jobs:
 
       - name: Make build scripts executable
         run: |
-          chmod +x build-all.sh
+          chmod +x scripts/build-all.sh
           chmod +x examples/build-examples*.sh
 
       - name: Run cross-platform build system
         run: |
-          ./build-all.sh
+          ./scripts/build-all.sh
 
       - name: Remove runtime dependencies and test portability
         run: |

@@ -1,45 +1,36 @@
-# UBuilder Documentation
+# UBuilder docs
 
-This directory contains comprehensive documentation for the Universal Executable Framework (UBuilder).
+Two top-level sections — pick the one that matches what you're doing.
 
-## Documentation Structure
+## For users — building bundles with ubuilder
 
-### Core docs
-- [Getting Started](getting-started.md) - Quick start guide and installation
-- [Quick Start](quick-start.md) - Minimal walkthrough
-- [CLI Reference](cli-reference.md) - Command-line interface reference
-- [Architecture](architecture.md) - Technical architecture and design
-- [Examples](examples.md) - Example applications and tutorials
-- [Releases](releases.md) - Release notes
-- [Troubleshooting](troubleshooting.md) - Common issues and solutions
+Start here if you're packaging a Python / PHP / Node app.
 
-### Architecture
-- [Architecture Audit](architecture/ARCHITECTURE_AUDIT.md) — honest engineering review of the path to true 0-dependency executables (gaps, refactors, phasing)
-- [Config File Spec (`ubuilder.json`)](architecture/CONFIG_FILE_SPEC.md) — schema, discovery, and CLI/config precedence for the planned config-file loader
-- [Static Launcher (S8)](architecture/STATIC_LAUNCHER.md) — how to build the launcher with `-DUBUILDER_STATIC=ON` so it has zero shared-library deps, and the musl toolchain for hermetic distribution builds
-- [Hermetic Interpreters (M1)](architecture/M1_HERMETIC_INTERPRETERS.md) — vendoring strategy, bundle-format change, `--runtime-source` plumbing, and Tier-3 plan
-- [User Dependency Install (M8)](architecture/M8_USER_DEPS.md) — staging the runtime, pip-installing `requirements.txt` into a hermetic tree without polluting the shared cache
-- [Roadmap — next sessions](architecture/ROADMAP_NEXT.md) — remaining best-DX items (README rewrite, install cache, lockfile support, PHP hermetic, arm64/macOS, polish) with concrete starting points
+- [Getting started](user/getting-started.md) — install + first bundle.
+- [Quick start](user/quick-start.md) — minimal walkthrough.
+- [CLI reference](user/cli-reference.md) — every flag, what it does.
+- [Examples](user/examples.md) — Laravel, Flask, Express, GUI apps, etc.
+- [Architecture overview](user/architecture-overview.md) — how a bundle is laid out and what runs at startup.
+- [Troubleshooting](user/troubleshooting.md) — common errors and fixes.
+- [Guides](user/guides/) — debug-mode usage, project instructions.
+- [Bundle test harness](../tests/bundle/README.md) — end-to-end validation tests you can run.
 
-### Guides
-- [Project Instructions](guides/project-instructions.md)
-- [Debug Usage](guides/debug-usage.md)
-- [Bundle Test Harness](../tests/bundle/README.md) — end-to-end validation (build → bundle → run → assert)
+## For contributors — working on ubuilder itself
 
-### Reports & status notes
-- [Project Completion](reports/project-completion.md)
-- [Project Status](reports/project-status.md)
-- [Final Status](reports/final-status.md)
-- [Portability Fixes Applied](reports/portability-fixes-applied.md)
-- [Library Embedding Success](reports/library-embedding-success.md)
-- [Library Embedding Success Notes](reports/library-embedding-success-notes.md)
-- [CPU Architecture Compatibility](reports/cpu-architecture-compatibility.md)
-- [Docker Compatibility](reports/docker-compatibility.md)
-- [Runtime Analysis](reports/runtime-analysis.md)
+Read these if you're modifying ubuilder's source, fixing a bug, or planning a feature.
 
-## Quick Links
+- [Architecture audit](internals/architecture/ARCHITECTURE_AUDIT.md) — engineering review of the path to true zero-dependency executables.
+- [Config file spec](internals/architecture/CONFIG_FILE_SPEC.md) — `ubuilder.json` schema, discovery, CLI/config precedence.
+- [Static launcher (S8)](internals/architecture/STATIC_LAUNCHER.md) — building with `-DUBUILDER_STATIC=ON` and the musl toolchain.
+- [Hermetic interpreters (M1)](internals/architecture/M1_HERMETIC_INTERPRETERS.md) — vendoring strategy, `--runtime-source`, Tier-3 isolation.
+- [User dependency install (M8)](internals/architecture/M8_USER_DEPS.md) — staging the runtime, installing user deps without polluting the shared cache.
+- [Roadmap](internals/architecture/ROADMAP_NEXT.md) — what's planned next.
+- [Release process](internals/releases.md) — how to cut a release.
+- [Historical reports](internals/reports/) — snapshots from earlier milestones (kept for reference; not load-bearing).
+
+## Project links
 
 - [Main README](../README.md)
 - [Changelog](../CHANGELOG.md)
-- [Contributing Guide](../CONTRIBUTING.md)
+- [Contributing](../CONTRIBUTING.md)
 - [License](../LICENSE)
