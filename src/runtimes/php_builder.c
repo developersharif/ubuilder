@@ -511,23 +511,27 @@ static char* php_find_composer(void) {
 #endif  /* !PLATFORM_WINDOWS */
 
 // PHP runtime validation
+//
+// Accept any of: a configured entry_point that resolves to an existing
+// regular file (Laravel `artisan`, Symfony `bin/console`, generic CLI
+// scripts), or one of the conventional defaults (main.php, index.php).
+// Extensionless entry files are allowed — PHP doesn't care about the
+// extension; the shebang/argv tells it what to run.
 static ub_result_t php_validate_project(const char* project_dir) {
-    char main_php_path[1024];
+    char path[1024];
     struct stat st;
-    
-    // Check for main.php or other PHP files
-    snprintf(main_php_path, sizeof(main_php_path), "%s/main.php", project_dir);
-    
-    if (stat(main_php_path, &st) == 0) {
-        return UB_SUCCESS;
+    /* The validate hook doesn't have access to the config yet (it's called
+     * before embed). We accept any of the conventional names OR any of the
+     * common CLI entry-point names projects use. The configured entry is
+     * cross-checked at embed time, where we DO have the config — and the
+     * embed step writes a .ubuilder.entry marker so the launcher honors it. */
+    const char* candidates[] = {
+        "main.php", "index.php", "artisan", "bin/console", "console", "app", NULL
+    };
+    for (size_t i = 0; candidates[i]; i++) {
+        snprintf(path, sizeof(path), "%s/%s", project_dir, candidates[i]);
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) return UB_SUCCESS;
     }
-    
-    // Look for index.php
-    snprintf(main_php_path, sizeof(main_php_path), "%s/index.php", project_dir);
-    if (stat(main_php_path, &st) == 0) {
-        return UB_SUCCESS;
-    }
-    
     return UB_ERROR_FILE_NOT_FOUND;
 }
 
@@ -1335,6 +1339,23 @@ static ub_result_t php_embed_application(const ub_config_t* config, FILE* output
     // Write number of files marker (we'll update this later if needed)
     uint32_t file_count_placeholder = 0;
     fwrite(&file_count_placeholder, sizeof(file_count_placeholder), 1, output_file);
+
+    /* Emit a `.ubuilder.entry` marker file as the FIRST embedded record. It
+     * carries the configured entry_point's relative path so the launcher
+     * doesn't have to guess (today's main.php→index.php→first.php heuristic
+     * breaks for Laravel's `artisan`, Symfony's `bin/console`, etc.).
+     * Skipped when no entry_point was configured — launcher heuristic still
+     * works for the simple cases. */
+    if (config && config->entry_point && *config->entry_point) {
+        const char* marker = ".ubuilder.entry";
+        uint32_t   plen   = (uint32_t)strlen(marker);
+        fwrite(&plen,  sizeof(plen),  1, output_file);
+        fwrite(marker, 1, plen, output_file);
+
+        uint32_t clen = (uint32_t)strlen(config->entry_point);
+        fwrite(&clen, sizeof(clen), 1, output_file);
+        fwrite(config->entry_point, 1, clen, output_file);
+    }
 
     ub_result_t result = php_embed_files_recursive(project_dir, project_dir, output_file);
 

@@ -262,23 +262,21 @@ ub_result_t ub_execute_application(const char* temp_dir, const char* entry_point
 }
 
 // Function to check if current executable is a UBuilder app and run it
+//
+// Dispatch rule (v2.2.0+): the trailing UBUILDER_MODULAR_V4_SHA256_MARKER
+// is the ONLY signal we use. If it's there, this binary IS a bundle and
+// we hand off to the launcher with the user's argv passed through
+// verbatim — including `-`-prefixed flags like `--port=8000`, `-v`,
+// `migrate --seed`. Without this, Laravel-style apps where the bundled
+// CLI takes its own flags couldn't work, because the previous argv
+// sniff (kill embedded-app dispatch on any dash arg) treated every flag
+// as if it were addressed to the ubuilder builder.
+//
+// If the trailer is absent we return UB_ERROR_RUNTIME_NOT_FOUND and
+// main.c falls through to builder-mode argv parsing (which handles
+// --help / --version / --build-flags correctly).
 ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]) {
-    // Quick check: if we have obvious CLI arguments, skip embedded app detection
-    if (argc > 1) {
-        for (int i = 1; i < argc; i++) {
-            if (argv[i] && (
-                strstr(argv[i], "--version") || 
-                strstr(argv[i], "--help") || 
-                strstr(argv[i], "--project-dir") ||
-                strstr(argv[i], "--runtime") ||
-                strstr(argv[i], "--output") ||
-                argv[i][0] == '-')) {
-                // This looks like a CLI invocation, not an embedded app
-                return UB_ERROR_RUNTIME_NOT_FOUND;
-            }
-        }
-    }
-    
+    /* argv is forwarded to ub_run_modular_embedded_app below — see line 392. */
     FILE* self_file;
     /* V4 trailer (audit S3): adds a 32-byte SHA-256 of the payload sitting
      * just before the offset+marker block. V3 bundles (which carried no
@@ -912,7 +910,11 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     // Extract all embedded files
     int files_extracted = 0;
     char first_php_file[1024] = "";
-    
+    /* Set to 1 once the `.ubuilder.entry` marker resolves the script path —
+     * subsequent .php files seen during the walk must NOT overwrite the
+     * marker's choice. */
+    int php_entry_locked_by_marker = 0;
+
     while (1) {
         uint32_t path_len;
         
@@ -989,28 +991,56 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
         }
         fclose(output_file);
         
-        // Entry-point selection: prefer main.php, then index.php (only at
-        // the project root, not nested), then any other .php file as a
-        // fallback. Matches PHP convention — without the index.php tier,
-        // a project laid out like {index.php, src/Icons.php, ...} would
-        // pick src/Icons.php (whichever extracts first) and silently run
-        // the wrong file. Validated by the filemanager-phpgui repro.
+        // Entry-point selection for PHP, in precedence order:
+        //   1. `.ubuilder.entry` marker — emitted by php_embed_application
+        //      when the user configured `entry_point` in ubuilder.json.
+        //      Its content is the relative path of the real entry script
+        //      (may be extensionless, e.g. Laravel's "artisan"). When we
+        //      see it during extraction we resolve its path against
+        //      temp_dir and lock that in as the answer, beating every
+        //      other candidate. Skip extracting the marker file itself.
+        //   2. main.php (the historical default).
+        //   3. Root-level index.php (no main.php found).
+        //   4. First .php file extracted (last-resort fallback).
         if (runtime == UB_RUNTIME_PHP) {
-            const char* ext = strrchr(rel_path, '.');
-            if (ext && strcmp(ext, ".php") == 0) {
-                /* `rel_path` looks like "main.php" or "src/Icons.php" or
-                 * "index.php". A leading-slash test is a portable proxy
-                 * for "this is at the bundle root, not in a subdir". */
-                int is_root_level = (strchr(rel_path, '/') == NULL &&
-                                     strchr(rel_path, '\\') == NULL);
-
-                /* main.php always wins; same for an existing main.php
-                 * entry we already locked in earlier in the walk. */
-                if (strcmp(rel_path, "main.php") == 0 ||
-                    (is_root_level && strstr(first_php_file, "main.php") == NULL &&
-                     strcmp(rel_path, "index.php") == 0) ||
-                    strlen(first_php_file) == 0) {
-                    strcpy(first_php_file, full_path);
+            if (strcmp(rel_path, ".ubuilder.entry") == 0) {
+                /* Marker already extracted above. Read its content (a
+                 * relative path) and lock it in as the entry. Subsequent
+                 * .php files seen during the walk are ignored. */
+                FILE* mf = fopen(full_path, "rb");
+                if (mf) {
+                    char buf[260];
+                    size_t n = fread(buf, 1, sizeof(buf) - 1, mf);
+                    fclose(mf);
+                    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' ||
+                                     buf[n-1] == ' '  || buf[n-1] == '\t')) n--;
+                    buf[n] = 0;
+                    if (n > 0) {
+#ifdef PLATFORM_WINDOWS
+                        snprintf(first_php_file, sizeof(first_php_file),
+                                 "%s\\%s", temp_dir, buf);
+                        for (char* p = first_php_file; *p; p++) {
+                            if (*p == '/') *p = '\\';
+                        }
+#else
+                        snprintf(first_php_file, sizeof(first_php_file),
+                                 "%s/%s", temp_dir, buf);
+#endif
+                        php_entry_locked_by_marker = 1;
+                    }
+                }
+            } else if (!php_entry_locked_by_marker) {
+                const char* ext = strrchr(rel_path, '.');
+                if (ext && strcmp(ext, ".php") == 0) {
+                    int is_root_level = (strchr(rel_path, '/') == NULL &&
+                                         strchr(rel_path, '\\') == NULL);
+                    if (strcmp(rel_path, "main.php") == 0 ||
+                        (is_root_level &&
+                         strstr(first_php_file, "main.php") == NULL &&
+                         strcmp(rel_path, "index.php") == 0) ||
+                        strlen(first_php_file) == 0) {
+                        strcpy(first_php_file, full_path);
+                    }
                 }
             }
         }
