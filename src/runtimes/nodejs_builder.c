@@ -282,15 +282,25 @@ static int nodejs_locate_runtime(const ub_config_t* config, char* out, size_t ou
  *   - no vendored Node runtime is reachable (host mode — caller embeds
  *     the project as-is; the user is responsible for npm install)
  */
+/* Return pointer to the trailing path segment of `path` (interior pointer,
+ * caller must not free). */
+static const char* nodejs_path_basename(const char* path) {
+    const char* p = strrchr(path, '/');
+    return p ? p + 1 : path;
+}
+
 static ub_result_t nodejs_maybe_stage_project_with_deps(const ub_config_t* config,
                                                        char** out_staged) {
     *out_staged = NULL;
     if (!config || config->no_install_deps) return UB_SUCCESS;
 
     char pkg_path[1024];
-    snprintf(pkg_path, sizeof(pkg_path), "%s/package.json", config->project_dir);
+    char lock_path[1024];
+    snprintf(pkg_path,  sizeof(pkg_path),  "%s/package.json",      config->project_dir);
+    snprintf(lock_path, sizeof(lock_path), "%s/package-lock.json", config->project_dir);
     struct stat st;
     if (stat(pkg_path, &st) != 0 || !S_ISREG(st.st_mode)) return UB_SUCCESS;
+    int have_lock = (stat(lock_path, &st) == 0 && S_ISREG(st.st_mode));
 
     char node_root[1024];
     if (nodejs_locate_runtime(config, node_root, sizeof(node_root)) != 0) {
@@ -318,10 +328,29 @@ static ub_result_t nodejs_maybe_stage_project_with_deps(const ub_config_t* confi
         return UB_ERROR_EXTRACTION_FAILED;
     }
 
-    /* Spawn `<node_root>/bin/node <node_root>/lib/node_modules/npm/bin/npm-cli.js
-     * install --omit=dev` with cwd=<stage>. Calling npm-cli.js directly via the
-     * vendored node avoids depending on a `node` interpreter being able to find
-     * `npm` on PATH or via the shell wrapper. */
+    /* M8-fast: install-cache lookup before invoking npm. Key inputs:
+     *   - runtime id: basename of node_root (e.g. node-v24.15.0-linux-x64)
+     *   - manifest:   package.json
+     *   - lockfile:   package-lock.json (optional, but recommended for
+     *                 reproducibility — item #3)
+     */
+    char hex_key[65];
+    int cache_ok = (ub_install_cache_key(nodejs_path_basename(node_root),
+                                         pkg_path,
+                                         have_lock ? lock_path : NULL,
+                                         hex_key) == 0);
+    char staged_node_modules[1024];
+    snprintf(staged_node_modules, sizeof(staged_node_modules), "%s/node_modules", stage);
+
+    if (cache_ok && ub_install_cache_lookup("nodejs", hex_key, staged_node_modules) == 0) {
+        printf("Install cache hit (nodejs/%.12s...) — skipped npm install.\n", hex_key);
+        *out_staged = strdup(stage);
+        return UB_SUCCESS;
+    }
+
+    /* Cache miss: run npm. `npm ci --omit=dev` when a lockfile is present
+     * (faster, strict — item #3); fall back to `npm install --omit=dev`
+     * otherwise. Both leave node_modules at <stage>/node_modules. */
     char node_exe[1024];
     snprintf(node_exe, sizeof(node_exe), "%s/bin/node", node_root);
     char npm_cli[1024];
@@ -331,24 +360,38 @@ static ub_result_t nodejs_maybe_stage_project_with_deps(const ub_config_t* confi
         pc_remove_tree(stage);
         return UB_ERROR_FILE_NOT_FOUND;
     }
-    printf("Installing dependencies from %s into staged project\n", pkg_path);
+    printf("Installing dependencies from %s into staged project%s\n",
+           pkg_path, have_lock ? " (npm ci, lockfile mode)" : " (npm install)");
     printf("  node: %s\n  npm:  %s\n", node_exe, npm_cli);
 
-    char* argv[] = {
-        node_exe,
-        npm_cli,
-        (char*)"install",
-        (char*)"--omit=dev",
-        (char*)"--no-audit",
-        (char*)"--no-fund",
-        (char*)"--no-progress",
-        NULL
-    };
+    char* argv[10];
+    int i = 0;
+    argv[i++] = node_exe;
+    argv[i++] = npm_cli;
+    argv[i++] = have_lock ? (char*)"ci" : (char*)"install";
+    argv[i++] = (char*)"--omit=dev";
+    argv[i++] = (char*)"--no-audit";
+    argv[i++] = (char*)"--no-fund";
+    argv[i++] = (char*)"--no-progress";
+    argv[i++] = NULL;
+
     int rc = pc_spawn_and_wait(node_exe, argv, NULL, stage);
     if (rc != 0) {
-        fprintf(stderr, "Error: npm install failed (exit %d). Bundle build aborted.\n", rc);
+        fprintf(stderr, "Error: npm %s failed (exit %d). Bundle build aborted.\n",
+                have_lock ? "ci" : "install", rc);
         pc_remove_tree(stage);
         return UB_ERROR_EXECUTION_FAILED;
+    }
+
+    /* Best-effort cache store. The freshly-installed node_modules is at
+     * <stage>/node_modules; copy (hardlink) into the install cache. */
+    if (cache_ok) {
+        struct stat nst;
+        if (stat(staged_node_modules, &nst) == 0 && S_ISDIR(nst.st_mode)) {
+            if (ub_install_cache_store("nodejs", hex_key, staged_node_modules) == 0) {
+                printf("Install cache stored (nodejs/%.12s...)\n", hex_key);
+            }
+        }
     }
 
     *out_staged = strdup(stage);

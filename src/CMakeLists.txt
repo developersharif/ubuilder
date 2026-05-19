@@ -19,6 +19,7 @@ add_library(ubuilder_core STATIC
     runtimes/runtime_builder.h
     runtimes/runtime_embedder.c
     runtimes/runtime_embedder.h
+    runtimes/install_cache.c
     runtimes/python_builder.c
     runtimes/php_builder.c
     runtimes/nodejs_builder.c

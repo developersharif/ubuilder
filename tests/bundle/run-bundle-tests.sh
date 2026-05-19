@@ -322,6 +322,11 @@ run_m8_deps_case() {
     mkdir -p "$cw/build" "$cw/run"
     info "fixture: $fdir (requirements.txt → attrs==23.2.0)"
 
+    # M8-fast cache hygiene: wipe the install cache before the first build
+    # so we can prove cache miss → store, then cache hit on the second build.
+    local ic_root="${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/install-cache/python"
+    rm -rf "$ic_root"
+
     if ! "$UBUILDER_BIN" \
             --project-dir="$fdir" \
             --output="$cw/build/app" \
@@ -331,6 +336,30 @@ run_m8_deps_case() {
         return 1
     fi
     ok "bundle built ($(du -h "$cw/build/app" | cut -f1))"
+    if ! grep -q "Install cache stored (python/" "$cw/build.log"; then
+        fail "build #1 did not store an install-cache entry (see $cw/build.log)"
+        return 1
+    fi
+    ok "build #1 stored install-cache entry"
+
+    # Build #2: same fixture, expect cache hit and no pip install.
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/build/app2" \
+            >"$cw/build2.log" 2>&1; then
+        fail "ubuilder build #2 failed (see $cw/build2.log)"
+        sed 's/^/    /' "$cw/build2.log" | tail -n 20
+        return 1
+    fi
+    if ! grep -q "Install cache hit (python/" "$cw/build2.log"; then
+        fail "build #2 missed the install cache (see $cw/build2.log)"
+        return 1
+    fi
+    if grep -qE "^Installing Python dependencies" "$cw/build2.log"; then
+        fail "build #2 ran pip install despite cache hit"
+        return 1
+    fi
+    ok "build #2 hit install cache (no pip install run)"
 
     cp "$cw/build/app" "$cw/run/app"
     chmod +x "$cw/run/app"
@@ -393,6 +422,9 @@ run_m8b_deps_case() {
     mkdir -p "$cw/build" "$cw/run"
     info "fixture: $fdir (package.json → picocolors@1.1.1)"
 
+    local ic_root="${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/install-cache/nodejs"
+    rm -rf "$ic_root"
+
     if ! "$UBUILDER_BIN" \
             --project-dir="$fdir" \
             --output="$cw/build/app" \
@@ -402,6 +434,29 @@ run_m8b_deps_case() {
         return 1
     fi
     ok "bundle built ($(du -h "$cw/build/app" | cut -f1))"
+    if ! grep -q "Install cache stored (nodejs/" "$cw/build.log"; then
+        fail "build #1 did not store an install-cache entry (see $cw/build.log)"
+        return 1
+    fi
+    ok "build #1 stored install-cache entry"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/build/app2" \
+            >"$cw/build2.log" 2>&1; then
+        fail "ubuilder build #2 failed (see $cw/build2.log)"
+        sed 's/^/    /' "$cw/build2.log" | tail -n 20
+        return 1
+    fi
+    if ! grep -q "Install cache hit (nodejs/" "$cw/build2.log"; then
+        fail "build #2 missed the install cache (see $cw/build2.log)"
+        return 1
+    fi
+    if grep -qE "^Installing dependencies from .* into staged project" "$cw/build2.log"; then
+        fail "build #2 ran npm despite cache hit"
+        return 1
+    fi
+    ok "build #2 hit install cache (no npm install run)"
 
     cp "$cw/build/app" "$cw/run/app"
     chmod +x "$cw/run/app"

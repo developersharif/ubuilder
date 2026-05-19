@@ -242,6 +242,147 @@ static void test_runtime_cache_lookup(void) {
     pc_remove_tree(root);
 }
 
+/* M8-fast: install cache. Verify key stability, key sensitivity to
+ * manifest/lockfile/runtime changes, and store-then-lookup round trips. */
+static void test_install_cache(void) {
+    char tmp_home[256];
+    snprintf(tmp_home, sizeof(tmp_home), "/tmp/ubuilder-ic-test.%d", (int)getpid());
+    pc_remove_tree(tmp_home);
+    pc_mkdir_p(tmp_home);
+
+    /* Re-root the cache so we don't pollute the user's real cache. */
+    char* saved_xdg  = getenv("XDG_CACHE_HOME");
+    char* saved_dup  = saved_xdg ? strdup(saved_xdg) : NULL;
+    setenv("XDG_CACHE_HOME", tmp_home, 1);
+
+    /* Synthesize a manifest. */
+    char manifest[512];
+    snprintf(manifest, sizeof(manifest), "%s/requirements.txt", tmp_home);
+    touch(manifest, "attrs==23.2.0\n");
+
+    /* Key A: rt=python-3.12, no lockfile. */
+    char key_a[65];
+    EXPECT("install_cache_key: returns 0 with valid inputs",
+           ub_install_cache_key("python-3.12", manifest, NULL, key_a) == 0);
+    EXPECT("install_cache_key: produces 64-char hex",
+           strlen(key_a) == 64);
+
+    /* Key B: same inputs again → deterministic. */
+    char key_b[65];
+    ub_install_cache_key("python-3.12", manifest, NULL, key_b);
+    EXPECT("install_cache_key: deterministic for same inputs",
+           strcmp(key_a, key_b) == 0);
+
+    /* Key C: different runtime id → different key. */
+    char key_c[65];
+    ub_install_cache_key("python-3.13", manifest, NULL, key_c);
+    EXPECT("install_cache_key: changes when runtime_id changes",
+           strcmp(key_a, key_c) != 0);
+
+    /* Key D: lockfile present → different key. */
+    char lockfile[512];
+    snprintf(lockfile, sizeof(lockfile), "%s/requirements.lock", tmp_home);
+    touch(lockfile, "attrs==23.2.0\nzope.interface==6.1\n");
+    char key_d[65];
+    ub_install_cache_key("python-3.12", manifest, lockfile, key_d);
+    EXPECT("install_cache_key: changes when lockfile added",
+           strcmp(key_a, key_d) != 0);
+
+    /* Key E: lockfile_path points at a missing file → same as no lockfile. */
+    char key_e[65];
+    char missing_lock[512];
+    snprintf(missing_lock, sizeof(missing_lock), "%s/nope.lock", tmp_home);
+    ub_install_cache_key("python-3.12", manifest, missing_lock, key_e);
+    EXPECT("install_cache_key: missing lockfile path == no lockfile",
+           strcmp(key_a, key_e) == 0);
+
+    /* Key F: unreadable manifest → -1. */
+    char missing_manifest[512];
+    snprintf(missing_manifest, sizeof(missing_manifest), "%s/nope.txt", tmp_home);
+    char key_f[65];
+    EXPECT("install_cache_key: -1 when manifest missing",
+           ub_install_cache_key("python-3.12", missing_manifest, NULL, key_f) == -1);
+
+    /* entry_path: pure path math, should resolve under our test XDG. */
+    char entry_path[1024];
+    int rc = ub_install_cache_entry_path("python", key_a, entry_path, sizeof(entry_path));
+    EXPECT("install_cache_entry_path: returns 0", rc == 0);
+    EXPECT("install_cache_entry_path: contains the hex key",
+           rc == 0 && strstr(entry_path, key_a) != NULL);
+    EXPECT("install_cache_entry_path: under custom XDG_CACHE_HOME",
+           rc == 0 && strstr(entry_path, tmp_home) != NULL);
+
+    /* Round trip: build a src tree, store, lookup into a fresh dest. */
+    char src_dir[512];
+    snprintf(src_dir, sizeof(src_dir), "%s/src", tmp_home);
+    pc_mkdir_p(src_dir);
+    char src_file[512];
+    snprintf(src_file, sizeof(src_file), "%s/payload.txt", src_dir);
+    touch(src_file, "hello-cache");
+    char src_subdir[512];
+    snprintf(src_subdir, sizeof(src_subdir), "%s/sub", src_dir);
+    pc_mkdir_p(src_subdir);
+    char src_subfile[512];
+    snprintf(src_subfile, sizeof(src_subfile), "%s/inner.txt", src_subdir);
+    touch(src_subfile, "deep-cache");
+
+    EXPECT("install_cache_store: round-trip store returns 0",
+           ub_install_cache_store("python", key_a, src_dir) == 0);
+
+    char dest_dir[512];
+    snprintf(dest_dir, sizeof(dest_dir), "%s/dest", tmp_home);
+    pc_mkdir_p(dest_dir);
+    EXPECT("install_cache_lookup: hit returns 0",
+           ub_install_cache_lookup("python", key_a, dest_dir) == 0);
+
+    /* Verify the materialized files. */
+    char dest_file[512];
+    snprintf(dest_file, sizeof(dest_file), "%s/payload.txt", dest_dir);
+    EXPECT("install_cache_lookup: top file materialized",
+           path_exists(dest_file));
+    snprintf(dest_file, sizeof(dest_file), "%s/sub/inner.txt", dest_dir);
+    EXPECT("install_cache_lookup: nested file materialized",
+           path_exists(dest_file));
+
+    /* Re-store same key: peaceful no-op (entry already exists). */
+    EXPECT("install_cache_store: idempotent on duplicate key",
+           ub_install_cache_store("python", key_a, src_dir) == 0);
+
+    /* Miss case: key that was never stored. */
+    char bogus_dest[512];
+    snprintf(bogus_dest, sizeof(bogus_dest), "%s/bogus_dest", tmp_home);
+    pc_mkdir_p(bogus_dest);
+    EXPECT("install_cache_lookup: miss returns -1",
+           ub_install_cache_lookup("python",
+                                   "0000000000000000000000000000000000000000000000000000000000000000",
+                                   bogus_dest) == -1);
+
+    /* Merge semantics: pre-existing files in dest are preserved. */
+    char merge_dest[512];
+    snprintf(merge_dest, sizeof(merge_dest), "%s/merge_dest", tmp_home);
+    pc_mkdir_p(merge_dest);
+    char preexisting[512];
+    snprintf(preexisting, sizeof(preexisting), "%s/payload.txt", merge_dest);
+    touch(preexisting, "preexisting-content");
+    EXPECT("install_cache_lookup: additive merge returns 0",
+           ub_install_cache_lookup("python", key_a, merge_dest) == 0);
+    /* The pre-existing file should still have its original content. */
+    FILE* pf = fopen(preexisting, "rb");
+    char buf[64] = {0};
+    if (pf) { fread(buf, 1, sizeof(buf) - 1, pf); fclose(pf); }
+    EXPECT("install_cache_lookup: existing file untouched on merge",
+           strcmp(buf, "preexisting-content") == 0);
+
+    /* Restore env. */
+    if (saved_dup) {
+        setenv("XDG_CACHE_HOME", saved_dup, 1);
+        free(saved_dup);
+    } else {
+        unsetenv("XDG_CACHE_HOME");
+    }
+    pc_remove_tree(tmp_home);
+}
+
 void test_platform_compat(void) {
     printf("\nPlatform compatibility shim tests\n");
     printf("---------------------------------\n");
@@ -256,4 +397,5 @@ void test_platform_compat(void) {
     test_executable_path();
     test_runtime_cache_lookup();
     test_find_vendor_script();
+    test_install_cache();
 }

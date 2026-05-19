@@ -80,14 +80,28 @@ static int python_find_site_packages(const char* runtime_dir, char* out, size_t 
     return rc;
 }
 
-/* M8: pip-install the project's requirements.txt into <staged>/lib/.../site-packages.
- * Uses the staged interpreter (not the host's) to ensure deps are installed for
- * the right Python version. Returns UB_SUCCESS or UB_ERROR_EXECUTION_FAILED. */
-static ub_result_t python_pip_install(const char* staged_runtime, const char* requirements_path) {
+/* M8: pip-install user deps into `target_dir` using the staged interpreter.
+ *
+ * Two manifest modes (M8 + item #3 lockfile reproducibility):
+ *   - lockfile_path != NULL  → `pip install --no-deps -r <lockfile>`. The
+ *     lockfile is expected to enumerate the resolved transitive graph
+ *     (one pinned version per package), so transitive resolution is OFF.
+ *   - lockfile_path == NULL  → `pip install -r <requirements_path>`. Pip
+ *     resolves transitive deps each run; two builds a month apart may
+ *     differ.
+ *
+ * `target_dir` is the pip --target= sink, an absolute path; the directory
+ * is created by pip if missing. Callers use a scratch dir on the cache
+ * filesystem so the result can be atomically moved into the install
+ * cache afterwards.
+ *
+ * Returns UB_SUCCESS / UB_ERROR_EXECUTION_FAILED. */
+static ub_result_t python_pip_install(const char* staged_runtime,
+                                      const char* requirements_path,
+                                      const char* lockfile_path,
+                                      const char* target_dir) {
     char interpreter[1024];
     snprintf(interpreter, sizeof(interpreter), "%s/bin/python3", staged_runtime);
-    /* python-build-standalone's bin/python3 is a symlink that didn't survive
-     * the staging copy if hardlinked across devices — try the versioned name. */
     struct stat st;
     if (stat(interpreter, &st) != 0) {
         DIR* d = opendir(staged_runtime);
@@ -107,25 +121,28 @@ static ub_result_t python_pip_install(const char* staged_runtime, const char* re
         }
     }
 
-    char site_packages[1024];
-    if (python_find_site_packages(staged_runtime, site_packages, sizeof(site_packages)) != 0) {
-        fprintf(stderr, "Error: could not locate site-packages in %s\n", staged_runtime);
-        return UB_ERROR_EXTRACTION_FAILED;
-    }
+    const char* manifest = lockfile_path ? lockfile_path : requirements_path;
+    printf("Installing Python dependencies%s\n",
+           lockfile_path ? " (lockfile mode, --no-deps)" : "");
+    printf("  interpreter: %s\n  manifest:    %s\n  target:      %s\n",
+           interpreter, manifest, target_dir);
 
-    printf("Installing dependencies from %s into staged runtime\n", requirements_path);
-    printf("  interpreter: %s\n", interpreter);
-    printf("  target:      %s\n", site_packages);
+    /* Build argv with optional --no-deps for lockfile mode. */
+    char* argv[16];
+    int i = 0;
+    argv[i++] = interpreter;
+    argv[i++] = (char*)"-m";
+    argv[i++] = (char*)"pip";
+    argv[i++] = (char*)"install";
+    argv[i++] = (char*)"--disable-pip-version-check";
+    argv[i++] = (char*)"--no-warn-script-location";
+    if (lockfile_path) argv[i++] = (char*)"--no-deps";
+    argv[i++] = (char*)"--target";
+    argv[i++] = (char*)target_dir;
+    argv[i++] = (char*)"-r";
+    argv[i++] = (char*)manifest;
+    argv[i++] = NULL;
 
-    char* argv[] = {
-        interpreter,
-        (char*)"-m", (char*)"pip", (char*)"install",
-        (char*)"--disable-pip-version-check",
-        (char*)"--no-warn-script-location",
-        (char*)"--target", site_packages,
-        (char*)"-r", (char*)requirements_path,
-        NULL
-    };
     int rc = pc_spawn_and_wait(interpreter, argv, NULL, NULL);
     if (rc != 0) {
         fprintf(stderr, "Error: pip install failed (exit %d). Bundle build aborted.\n", rc);
@@ -134,14 +151,30 @@ static ub_result_t python_pip_install(const char* staged_runtime, const char* re
     return UB_SUCCESS;
 }
 
-/* M8: orchestrate "stage the cached runtime, pip-install deps, return the
- * staged path (caller embeds from there and removes it after)". When the
- * project has no requirements.txt, returns UB_SUCCESS with *out_staged
- * left NULL so the caller embeds the cache tree directly.
+/* Return the trailing path segment of `path`. Returns a pointer into the
+ * input string (caller must not free). For "/a/b/c" → "c"; for "c" → "c". */
+static const char* path_basename_ptr(const char* path) {
+    const char* p = strrchr(path, '/');
+    return p ? p + 1 : path;
+}
+
+/* M8 + M8-fast: stage the cached runtime, materialize user deps into its
+ * site-packages, return the staged path.
  *
- * The stage uses hardlinks where possible (pc_copy_or_link_tree) so the
- * 32 MB Python tree is almost-free to clone; pip's --target= writes
- * only new files, never mutates existing inodes. */
+ * Dep materialization, in precedence:
+ *   1. Install-cache hit → hardlink-merge cached deps into site-packages.
+ *      No pip invocation. (Item #2: content-addressed install cache.)
+ *   2. Install-cache miss → pip install --target=<scratch>; hardlink-merge
+ *      scratch into site-packages; store scratch as the cache entry.
+ *
+ * If requirements.lock is present (item #3), it's preferred over
+ * requirements.txt and pip is invoked with --no-deps for reproducibility.
+ * Either way the lockfile (if present) participates in the cache key, so
+ * `requirements.txt` and `requirements.lock` invalidate the cache
+ * independently.
+ *
+ * Returns UB_SUCCESS with *out_staged NULL when there's no dep work to
+ * do (caller embeds the cache tree directly). */
 static ub_result_t python_maybe_stage_with_deps(const ub_config_t* config,
                                                 const char* runtime_dir,
                                                 char**      out_staged) {
@@ -149,9 +182,20 @@ static ub_result_t python_maybe_stage_with_deps(const ub_config_t* config,
     if (!config || config->no_install_deps) return UB_SUCCESS;
 
     char req_path[1024];
-    snprintf(req_path, sizeof(req_path), "%s/requirements.txt", config->project_dir);
+    char lock_path[1024];
+    snprintf(req_path,  sizeof(req_path),  "%s/requirements.txt",  config->project_dir);
+    snprintf(lock_path, sizeof(lock_path), "%s/requirements.lock", config->project_dir);
     struct stat st;
-    if (stat(req_path, &st) != 0 || !S_ISREG(st.st_mode)) return UB_SUCCESS;  /* nothing to install */
+    int have_req  = (stat(req_path,  &st) == 0 && S_ISREG(st.st_mode));
+    int have_lock = (stat(lock_path, &st) == 0 && S_ISREG(st.st_mode));
+    if (!have_req && !have_lock) return UB_SUCCESS;
+
+    /* Lockfile-only mode: still supported (no requirements.txt). The lockfile
+     * doubles as the manifest passed to pip and the cache-key input. */
+    const char* manifest_for_pip  = have_lock ? lock_path : req_path;
+    const char* manifest_for_key  = have_req  ? req_path  : lock_path;
+    const char* lockfile_for_pip  = have_lock ? lock_path : NULL;
+    const char* lockfile_for_key  = have_lock ? lock_path : NULL;
 
     /* Build a staging path under the cache's parent so hardlinks work
      * (same filesystem). $XDG_CACHE_HOME/ubuilder/stage/build-<pid>. */
@@ -162,7 +206,6 @@ static ub_result_t python_maybe_stage_with_deps(const ub_config_t* config,
     else if (home && *home) snprintf(stage, sizeof(stage), "%s/.cache/ubuilder/stage/build-%d", home, (int)getpid());
     else                    snprintf(stage, sizeof(stage), "/tmp/ubuilder-stage-%d",                  (int)getpid());
 
-    /* Wipe any prior leftover at this path. */
     pc_remove_tree(stage);
 
     printf("Staging hermetic Python tree for dependency install:\n");
@@ -174,10 +217,69 @@ static ub_result_t python_maybe_stage_with_deps(const ub_config_t* config,
         return UB_ERROR_EXTRACTION_FAILED;
     }
 
-    ub_result_t rc = python_pip_install(stage, req_path);
+    char site_packages[1024];
+    if (python_find_site_packages(stage, site_packages, sizeof(site_packages)) != 0) {
+        fprintf(stderr, "Error: could not locate site-packages in %s\n", stage);
+        pc_remove_tree(stage);
+        return UB_ERROR_EXTRACTION_FAILED;
+    }
+
+    /* Cache key: runtime identity is the basename of the source runtime
+     * dir (it's pinned by SHA in scripts/vendor-runtimes.sh, so the
+     * basename uniquely identifies the build of Python). Manifest +
+     * optional lockfile both feed the SHA. */
+    char hex_key[65];
+    int cache_ok = (ub_install_cache_key(path_basename_ptr(runtime_dir),
+                                         manifest_for_key,
+                                         lockfile_for_key,
+                                         hex_key) == 0);
+    if (cache_ok && ub_install_cache_lookup("python", hex_key, site_packages) == 0) {
+        printf("Install cache hit (python/%.12s...) — skipped pip install.\n", hex_key);
+        *out_staged = strdup(stage);
+        return UB_SUCCESS;
+    }
+
+    /* Cache miss: pip-install into a scratch dir on the cache filesystem
+     * so it can be moved into the cache by rename(2) on success. */
+    char scratch[1024] = {0};
+    int have_scratch = 0;
+    if (cache_ok) {
+        char cache_root[1024];
+        if (xdg && *xdg)        snprintf(cache_root, sizeof(cache_root), "%s/ubuilder/install-cache/python",       xdg);
+        else if (home && *home) snprintf(cache_root, sizeof(cache_root), "%s/.cache/ubuilder/install-cache/python", home);
+        else                    cache_root[0] = 0;
+        if (cache_root[0]) {
+            pc_mkdir_p(cache_root);
+            snprintf(scratch, sizeof(scratch), "%s/.scratch-%d", cache_root, (int)getpid());
+            pc_remove_tree(scratch);
+            have_scratch = 1;
+        }
+    }
+    /* If we couldn't pick a scratch dir, fall back to installing directly
+     * into the staged site-packages (legacy path). */
+    const char* pip_target = have_scratch ? scratch : site_packages;
+
+    ub_result_t rc = python_pip_install(stage, manifest_for_pip, lockfile_for_pip, pip_target);
     if (rc != UB_SUCCESS) {
+        if (have_scratch) pc_remove_tree(scratch);
         pc_remove_tree(stage);
         return rc;
+    }
+
+    if (have_scratch) {
+        if (ub_link_merge_tree(scratch, site_packages) != 0) {
+            fprintf(stderr, "Error: failed to merge installed deps into site-packages\n");
+            pc_remove_tree(scratch);
+            pc_remove_tree(stage);
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        /* Best-effort: persist the scratch dir as a cache entry. Failure
+         * is non-fatal — the build already has its deps; next run will
+         * just re-install instead of cache-hit. */
+        if (ub_install_cache_store("python", hex_key, scratch) == 0) {
+            printf("Install cache stored (python/%.12s...)\n", hex_key);
+        }
+        pc_remove_tree(scratch);
     }
 
     *out_staged = strdup(stage);

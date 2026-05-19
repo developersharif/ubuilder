@@ -96,6 +96,86 @@ int ub_find_vendor_script(char* out, size_t out_cap);
  */
 ub_result_t ub_auto_vendor(const char* runtime_key);
 
+/*
+ * M8-fast: content-addressed install cache for user dependencies. Avoids
+ * re-running pip/npm install when (runtime + manifest + lockfile) are
+ * unchanged.
+ *
+ * Cache layout: $XDG_CACHE_HOME/ubuilder/install-cache/<runtime>/<hex>/
+ * where `hex` is the 64-char SHA-256 key from ub_install_cache_key. Inside
+ * the entry, the producer stores a directory tree (Python: a site-packages
+ * subset; Node: a node_modules tree). The consumer hardlink-merges that
+ * tree into the staged build location.
+ *
+ * Failure to store is non-fatal: the cache is advisory.
+ */
+
+/*
+ * Compute the install-cache key from runtime identity + manifest + optional
+ * lockfile. Writes 64-char lowercase hex + NUL into `out` (caller-provided
+ * 65-byte buffer). Returns 0 on success, -1 on error (e.g. unreadable
+ * manifest).
+ *
+ * Hash composition:
+ *   sha256( "rt="       || runtime_id   || 0x00 ||
+ *           "manifest=" || sha256(file) || 0x00 ||
+ *           "lock="     || sha256(file_or_empty) )
+ *
+ * `runtime_id` is typically the basename of the vendored runtime dir
+ * (e.g. "cpython-3.12.13+20260510-..."); changes when the user re-vendors.
+ * `lockfile_path` may be NULL or refer to a missing path, in which case
+ * the lockfile slot hashes the empty string.
+ */
+int ub_install_cache_key(const char* runtime_id,
+                         const char* manifest_path,
+                         const char* lockfile_path,
+                         char        out[65]);
+
+/*
+ * Look up `<cache>/<runtime>/<hex_key>/` and, on hit, hardlink-merge its
+ * contents into `dest_dir`. dest_dir must already exist (caller is
+ * responsible for mkdir-p). Existing files in dest_dir are left alone
+ * (additive merge — first writer wins). Returns 0 on cache hit, -1 on
+ * miss or I/O error.
+ */
+int ub_install_cache_lookup(const char* runtime,
+                            const char* hex_key,
+                            const char* dest_dir);
+
+/*
+ * Store `src_dir`'s contents at `<cache>/<runtime>/<hex>/`. Races safely:
+ * builds in a `.tmp-<pid>` sibling then renames into place. If another
+ * process already populated the final entry, the local tmp is cleaned up
+ * and the call still returns 0. Returns 0 on success, -1 on failure.
+ */
+int ub_install_cache_store(const char* runtime,
+                           const char* hex_key,
+                           const char* src_dir);
+
+/*
+ * Resolve `<install-cache-root>/<runtime>/<hex_key>/` into out (sized
+ * out_cap). Pure path math, does not check existence. Returns 0 on
+ * success, -1 if the cache root is unresolvable (no $XDG_CACHE_HOME and
+ * no $HOME) or the path would overflow.
+ */
+int ub_install_cache_entry_path(const char* runtime,
+                                const char* hex_key,
+                                char*       out,
+                                size_t      out_cap);
+
+/*
+ * Hardlink-merge `src` directory into `dst` (additive). dst must already
+ * exist (caller mkdirs). For each file in src, link(src,dst); on EEXIST
+ * the existing dst file wins (first writer keeps the inode). On EXDEV/
+ * EPERM/EACCES falls back to a byte copy. Returns 0 on success, -1 on
+ * I/O error.
+ *
+ * Differs from pc_copy_or_link_tree in that pre-existing destination
+ * files are NOT an error — needed for merging pip's `--target=<scratch>`
+ * output into a site-packages that already contains stdlib bits.
+ */
+int ub_link_merge_tree(const char* src, const char* dst);
+
 // Function to extract PHP extensions and create custom php.ini
 ub_result_t ub_extract_php_extensions(FILE* input_file, const char* temp_dir);
 
