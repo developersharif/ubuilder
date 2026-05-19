@@ -1,24 +1,29 @@
-# UBuilder
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logowhite.png">
+    <img src="docs/assets/logo-transparent.png" alt="UBuilder" width="180">
+  </picture>
+</p>
 
-Bundle a Python, Node.js, or PHP project into a single executable.
-The output runs on any machine of the same OS and architecture
-without Python, Node, PHP, `pip install`, or `npm install`.
+<h1 align="center">UBuilder</h1>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Linux](https://img.shields.io/badge/Linux-supported-success.svg)]()
-[![macOS](https://img.shields.io/badge/macOS-supported-success.svg)]()
-[![Windows](https://img.shields.io/badge/Windows-supported-success.svg)]()
+<p align="center">
+  Bundle Python, Node.js, or PHP apps into a single self-contained executable.
+</p>
 
-The bundle contains your app, an interpreter, and every third-party
-dependency. At startup the bundle verifies a SHA-256 over its own
-payload, extracts to a temp directory, and execs the embedded
-interpreter. End users never touch the network; the bundle is
-self-contained.
+<p align="center">
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"></a>
+  <a href="https://github.com/developersharif/ubuilder/releases/latest"><img src="https://img.shields.io/github/v/release/developersharif/ubuilder" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Linux-supported-success.svg" alt="Linux">
+  <img src="https://img.shields.io/badge/macOS-supported-success.svg" alt="macOS">
+  <img src="https://img.shields.io/badge/Windows-supported-success.svg" alt="Windows">
+</p>
 
-The **build machine** doesn't need Python / Node / PHP installed
-globally either. The first time you run `ubuilder` it downloads pinned
-interpreter tarballs into `~/.cache/ubuilder/runtimes/` and embeds them
-into every bundle you produce. Subsequent builds reuse the cache.
+The output runs on any same-OS machine — no Python, Node, PHP, `pip`,
+`npm`, or `composer` required on the target. The build machine doesn't
+need a global interpreter either; `ubuilder`'s first run vendors pinned
+runtime tarballs into `~/.cache/ubuilder/runtimes/` and embeds them
+into every bundle.
 
 ```bash
 cd my-app/                   # contains main.py + (optional) requirements.txt
@@ -333,6 +338,10 @@ Full roadmap: [`docs/internals/architecture/ROADMAP_NEXT.md`](docs/internals/arc
 ---
 
 ## How it works
+
+<p align="center">
+  <img src="docs/assets/how-ubuilder-works.jpg" alt="How UBuilder works — build mode produces a bundle that contains the interpreter, dependencies, and your app; launcher mode extracts and runs it on any same-OS target machine" width="760">
+</p>
 
 UBuilder is one C binary with two modes, distinguished at startup:
 
