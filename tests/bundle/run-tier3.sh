@@ -42,12 +42,27 @@ mkdir -p "$TIER3_ROOT"
 WORK_DIR="$(mktemp -d "$TIER3_ROOT/run.XXXXXX")"
 RUNTIMES_CACHE="${UBUILDER_RUNTIMES_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/runtimes}"
 DOCKER_IMAGE="${UBUILDER_TIER3_IMAGE:-debian:12-slim}"
-# PHP M1-D needs the host's libxml2/libssl/etc. SONAMEs to be present in the
-# target image, so we cannot use debian:12-slim for PHP (libxml2.so.2 vs the
-# host's libxml2.so.16 on Ubuntu 24.10+). Default to an image that matches
-# modern Ubuntu/Debian-trixie libxml2 v2.13+ ABI; override per host if you're
-# building on a different distro family.
-DOCKER_IMAGE_PHP="${UBUILDER_TIER3_PHP_IMAGE:-ubuntu:25.10}"
+
+# Auto-pick the PHP tier-3 image to match the BUILD HOST's libxml2 SONAME.
+# PHP M1-D hardlinks the host's /usr/bin/php into the bundle; the target
+# image therefore must provide the same libxml2.so.<N>. The mapping below
+# is current as of mid-2026:
+#   libxml2.so.16 → libxml2 v2.13+ → Ubuntu 24.10+ / Debian Trixie+
+#   libxml2.so.2  → libxml2 v2.9–v2.12 → Ubuntu 20.04–24.04 / Debian 11–12
+# Override via UBUILDER_TIER3_PHP_IMAGE=... when needed.
+detect_php_image() {
+    local soname=""
+    if command -v ldd >/dev/null 2>&1 && command -v php >/dev/null 2>&1; then
+        soname="$(ldd "$(command -v php)" 2>/dev/null \
+                  | sed -n 's/.*\(libxml2\.so\.[0-9]*\).*/\1/p' | head -1)"
+    fi
+    case "$soname" in
+        libxml2.so.16) echo "ubuntu:25.10" ;;
+        libxml2.so.2)  echo "ubuntu:22.04" ;;
+        *)             echo "ubuntu:24.04" ;;   # neutral fallback
+    esac
+}
+DOCKER_IMAGE_PHP="${UBUILDER_TIER3_PHP_IMAGE:-$(detect_php_image)}"
 
 if [[ -t 1 ]]; then
     C_RED='\033[0;31m'; C_GRN='\033[0;32m'; C_YEL='\033[1;33m'; C_DIM='\033[2m'; C_RST='\033[0m'

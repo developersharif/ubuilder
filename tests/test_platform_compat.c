@@ -19,6 +19,19 @@
 #  ifndef S_ISREG
 #    define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #  endif
+   /* MSVC has no setenv/unsetenv; map to _putenv_s. The `overwrite` arg is
+    * ignored — _putenv_s always replaces — which matches the test's intent
+    * (each setenv is followed by an unsetenv, so overwrite semantics
+    * don't matter for the test outcome). */
+   static int test_setenv_shim(const char* k, const char* v, int overwrite) {
+       (void)overwrite;
+       return _putenv_s(k, v);
+   }
+   static int test_unsetenv_shim(const char* k) {
+       return _putenv_s(k, "");
+   }
+#  define setenv   test_setenv_shim
+#  define unsetenv test_unsetenv_shim
 #else
 #  include <unistd.h>
 #endif
@@ -102,7 +115,12 @@ static void test_spawn_basic(void) {
 static void test_spawn_missing(void) {
     char* argv_missing[] = { (char*)"nope", NULL };
     int r = pc_spawn_and_wait("/no/such/exe/here", argv_missing, NULL, NULL);
-    EXPECT("spawn: missing exe fails (< 0)", r < 0);
+    /* "Failure" is libc-dependent:
+     *   - glibc posix_spawn returns an error before fork → caller sees -1.
+     *   - macOS / non-glibc fork+execvp path forks, the child's execvp
+     *     fails, the child runs _exit(127), the parent returns 127.
+     * Either way, the call did NOT succeed — so just assert "not zero". */
+    EXPECT("spawn: missing exe fails (non-zero return)", r != 0);
 }
 
 static void test_env_overlay(void) {

@@ -25,6 +25,19 @@
 #ifndef PLATFORM_WINDOWS
 #include <unistd.h>
 #include <dirent.h>
+#else
+// MSVC's sys/stat.h lacks POSIX S_ISDIR/S_ISREG/S_ISLNK; define them so
+// install_cache.c compiles on Windows (the actual cache traversal still
+// runs through the existing PLATFORM_WINDOWS branches below).
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#endif
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#endif
+#ifndef S_ISLNK
+#define S_ISLNK(m) (0)
+#endif
 #endif
 
 /* ============================================================
