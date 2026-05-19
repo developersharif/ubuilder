@@ -106,7 +106,7 @@ print(f"Hello from Python, args: {sys.argv[1:]}")
 EOF
 
 ubuilder                                # auto-writes ubuilder.json on first run
-./hello-py world
+./dist/hello-py world                   # default output is dist/<project-dir-basename>
 # → Hello from Python, args: ['world']
 ```
 
@@ -117,7 +117,7 @@ cat > requirements.txt <<'EOF'
 attrs==23.2.0
 EOF
 ubuilder                                # pip-installs attrs into the bundle
-./hello-py
+./dist/hello-py
 ```
 
 ### Node.js
@@ -130,7 +130,7 @@ EOF
 echo '{"runtime":"node","entry_point":"main.js"}' > ubuilder.json
 
 ubuilder
-./hello-node world
+./dist/hello-node world
 ```
 
 With dependencies:
@@ -153,7 +153,7 @@ EOF
 echo '{"runtime":"php","entry_point":"main.php"}' > ubuilder.json
 
 ubuilder
-./hello-php world
+./dist/hello-php world
 ```
 
 With Composer:
@@ -222,8 +222,13 @@ ubuilder --verbose                      # show every spawned subprocess
 
 ### Build into a specific path
 
+By default the bundle goes to `dist/<project-dir-basename>` and the
+output tree is auto-excluded from itself so you can re-run `ubuilder`
+freely. Override:
+
 ```bash
-ubuilder --output=dist/myapp            # output goes to ./dist/myapp
+ubuilder --output=dist/myapp            # explicit path under dist/
+ubuilder --output=/opt/builds/myapp     # absolute path, anywhere
 ```
 
 ### See all flags
@@ -276,7 +281,7 @@ The zero-flag path is the default. Pass these for non-default cases:
 |------|---------|
 | `--project-dir <path>` | Build from a directory other than `.` |
 | `--runtime <python\|php\|node>` | Override the manifest's runtime |
-| `--output <path>` | Output executable path (default: `<name>`) |
+| `--output <path>` | Output executable path (default: `dist/<project-dir-basename>`) |
 | `--entry-point <file>` | Override the manifest's entry point |
 | `--config <path>` | Use an explicit `ubuilder.json` |
 | `--runtime-source <path>` | Use a specific vendored interpreter tree |

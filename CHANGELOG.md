@@ -5,6 +5,26 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-05-19
+
+### Added
+
+- **Default output path is now `dist/<name>`** when neither `--output` nor `"output"` in `ubuilder.json` is provided. `<name>` is derived from the project directory's basename (falls back to `app` if unresolvable). Mirrors the conventional `dist/` folder that most build tools use. User-supplied values still win.
+- **Auto-exclude of the output tree from the bundle.** When the resolved output path is relative (e.g. `dist/app`), ubuilder now appends `<output-top-dir>/**` (e.g. `dist/**`) to the effective exclude list before walking the project. This fixes a long-standing pre-existing bug where the recursive app-embed step would walk into the very directory it was writing to, producing a multi-gigabyte self-referencing bundle that eventually failed with `Failed to compute payload SHA-256`. For root-level outputs (no path separator) the bare filename is excluded instead.
+- Both defaults are silent on the zero-flag DX path; pass `--verbose` to see the `ubuilder: no output specified — defaulting to dist/X` and `ubuilder: auto-excluding output tree 'dist/**'` lines.
+
+### Fixed
+
+- **`copy_executable_template` now emits actionable errors.** Previously a stale `dist/executable` directory (left over from a crashed prior run, or a user-created dir mistakenly placed at the output path) produced an opaque `Failed to copy executable template / Resource extraction failed` chain with no hint what went wrong. The function now:
+  - Detects when `output_path` exists and is a directory, naming the path and suggesting two concrete recoveries (`rm -rf <path>` or change `output` in `ubuilder.json`).
+  - Auto-creates the parent directory of `output_path` when missing (so `"output": "dist/app"` works on a first-time build without manually `mkdir dist/`).
+  - Includes `strerror(errno)` and the resolved path in all other `fopen` failure messages.
+- Round-2 cross-platform CI fixes that landed between the failed `v2.1.0` tag attempt and the successful one are folded into this release for completeness:
+  - `src/runtimes/install_cache.c` MSVC `S_ISDIR`/`S_ISREG` fallbacks.
+  - `tests/test_platform_compat.c` MSVC `setenv`/`unsetenv` shims via `_putenv_s`.
+  - Loosened `test_spawn_missing` assertion to handle libc-dependent posix_spawn semantics (glibc returns -1 before fork; macOS forks then child `_exit(127)`).
+  - Tier-3 PHP image auto-selects by host libxml2 SONAME (`.16` → ubuntu:25.10, `.2` → ubuntu:24.04 for newer glibc coverage).
+
 ## [2.1.0] - 2026-05-19
 
 ### Added

@@ -4,6 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef PLATFORM_WINDOWS
+#  include <direct.h>
+#  define getcwd _getcwd
+#else
+#  include <unistd.h>
+#endif
+
 #ifndef PLATFORM_WINDOWS
 #include <getopt.h>
 
@@ -27,6 +34,112 @@ static struct option long_options[] = {
     {0, 0, 0, 0}
 };
 #endif
+
+/* Trailing path segment of `p` written to `out`. Treats both / and \ as
+ * separators. If `p` ends in a separator or is empty, writes "". */
+static void main_path_basename(const char* p, char* out, size_t cap) {
+    if (!p || !*p) { if (cap) out[0] = 0; return; }
+    const char* slash = NULL;
+    for (const char* q = p; *q; q++) {
+        if (*q == '/' || *q == '\\') slash = q;
+    }
+    const char* base = slash ? slash + 1 : p;
+    snprintf(out, cap, "%s", base);
+}
+
+/* Append `pattern` to `cfg->exclude` if it isn't already present. */
+static int append_exclude_pattern(ub_config_t* cfg, const char* pattern) {
+    if (!pattern || !*pattern) return 0;
+    for (size_t i = 0; i < cfg->exclude_count; i++) {
+        if (cfg->exclude[i] && strcmp(cfg->exclude[i], pattern) == 0) return 0;
+    }
+    size_t n = cfg->exclude_count;
+    char** grown = (char**)realloc(cfg->exclude, (n + 1) * sizeof(char*));
+    if (!grown) return -1;
+    grown[n] = strdup(pattern);
+    if (!grown[n]) { cfg->exclude = grown; return -1; }
+    cfg->exclude = grown;
+    cfg->exclude_count = n + 1;
+    return 0;
+}
+
+/* Final config-fill step, runs after ub_config_apply and before
+ * validate_required. Two responsibilities:
+ *
+ *   (a) Default `output_path` to `dist/<name>` if still unset. <name> is
+ *       derived from basename(project_dir); falls back to "app".
+ *
+ *   (b) Auto-exclude the output directory from the recursive app embed
+ *       so the (growing) output file doesn't get walked into the bundle.
+ *       For "dist/app" the exclude pattern is "dist/**"; for a root-level
+ *       output like "app" the exclude is just "app". Only fires for
+ *       relative output paths (absolute paths typically live outside the
+ *       project tree anyway).
+ *
+ * Both behaviors are silent unless --verbose is set, so the zero-flag DX
+ * stays clean. */
+static ub_result_t fill_defaults(ub_config_t* config) {
+    /* (a) default output */
+    if (!config->output_path) {
+        char name_buf[256] = {0};
+        if (config->project_dir && *config->project_dir) {
+            main_path_basename(config->project_dir, name_buf, sizeof(name_buf));
+            if (!name_buf[0] || strcmp(name_buf, ".") == 0) {
+                /* project_dir was "." (or empty after basename) — resolve to cwd basename. */
+                char cwd[1024];
+                if (getcwd(cwd, sizeof(cwd))) {
+                    main_path_basename(cwd, name_buf, sizeof(name_buf));
+                }
+            }
+        }
+        if (!name_buf[0]) snprintf(name_buf, sizeof(name_buf), "app");
+        char out_buf[512];
+        snprintf(out_buf, sizeof(out_buf), "dist/%s", name_buf);
+        config->output_path = strdup(out_buf);
+        if (!config->output_path) return UB_ERROR_MEMORY_ALLOCATION;
+        if (config->verbose) {
+            fprintf(stderr, "ubuilder: no output specified — defaulting to %s\n",
+                    config->output_path);
+        }
+    }
+
+    /* (b) auto-exclude the output directory */
+    if (config->output_path && config->output_path[0]) {
+        const char* op = config->output_path;
+        /* Skip absolute paths — they typically live outside the project. */
+        int is_abs = (op[0] == '/' || op[0] == '\\' ||
+                      (op[0] && op[1] == ':'));
+        if (!is_abs) {
+            /* Find first path-segment boundary so we exclude the top-level
+             * output directory's whole subtree, mirroring how .gitignore's
+             * `dist/` works in practice. */
+            const char* slash = strchr(op, '/');
+            if (!slash) slash = strchr(op, '\\');
+            if (slash && slash != op) {
+                size_t n = (size_t)(slash - op);
+                char pat[260];
+                if (n + 4 < sizeof(pat)) {
+                    memcpy(pat, op, n);
+                    memcpy(pat + n, "/**", 4);
+                    if (append_exclude_pattern(config, pat) != 0)
+                        return UB_ERROR_MEMORY_ALLOCATION;
+                    if (config->verbose) {
+                        fprintf(stderr, "ubuilder: auto-excluding output tree '%s'\n", pat);
+                    }
+                }
+            } else {
+                /* Root-level output (no slash) → exclude the bare filename. */
+                if (append_exclude_pattern(config, op) != 0)
+                    return UB_ERROR_MEMORY_ALLOCATION;
+                if (config->verbose) {
+                    fprintf(stderr, "ubuilder: auto-excluding output file '%s'\n", op);
+                }
+            }
+        }
+    }
+
+    return UB_SUCCESS;
+}
 
 /* Append one --exclude argument to config->exclude. Bumps presence so the
  * config-file layer knows to merge rather than overwrite. */
@@ -330,6 +443,19 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "ubuilder: using config %s\n", ub_config_path(cfg_file));
     }
     result = ub_config_apply(cfg_file, &presence, &config);
+    if (result != UB_SUCCESS) {
+        ub_config_free(cfg_file);
+        free_config(&config);
+        free(config_path);
+        ub_cleanup();
+        return EXIT_FAILURE;
+    }
+
+    /* Fill in defaults that aren't part of config_apply (output path,
+     * auto-exclude). Runs after config_apply so we don't shadow values
+     * the user explicitly set, and before validate_required so the
+     * "output is required" check sees the defaulted value. */
+    result = fill_defaults(&config);
     if (result != UB_SUCCESS) {
         ub_config_free(cfg_file);
         free_config(&config);
