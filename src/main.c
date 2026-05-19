@@ -1,5 +1,6 @@
 #include "ubuilder.h"
 #include "core/config.h"
+#include "core/update_check.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -459,6 +460,12 @@ int main(int argc, char* argv[]) {
     /* Publish verbose to the global so embedder/install-cache helpers
      * (which don't take ub_config_t) can gate their info prints. */
     ub_verbose = config.verbose;
+
+    /* Update-available check (skipped under UBUILDER_NO_UPDATE_CHECK=1
+     * or when stderr isn't a TTY — see src/core/update_check.c). Runs
+     * here, before the build kicks off, so the banner appears at the
+     * top of the output if a newer release is cached. */
+    ub_update_check_run();
     if (result != UB_SUCCESS) {
         ub_config_free(cfg_file);
         free_config(&config);
