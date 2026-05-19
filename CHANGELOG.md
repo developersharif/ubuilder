@@ -24,7 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - New unit suites for glob matching (`tests/test_glob_match.c`, 39 assertions) and PHP builder internals (`tests/test_php_builder.c`, 26 assertions).
 - New bundle cases: `python-with-exclude`, `nodejs-with-exclude`, `php-with-deps`, `php-missing-ext`, `php-exclude-ext`, `php-autoconfig`.
-- Total: 184 unit assertions + 13 end-to-end bundle cases passing.
+- New tier-3 (docker portability) PHP cases — bundle runs in a clean Ubuntu container that has only `php-cli`'s shared-lib transitives installed and `/usr/bin/php` removed, proving the bundle uses its own embedded `bin/php`.
+- Total: 184 unit assertions + 13 end-to-end bundle cases + 4 tier-3 docker cases passing.
+
+### Known limitations
+
+- **PHP bundles are tied to the build host's libxml2 SONAME family.** The host's `/usr/bin/php` is hardlinked into the bundle and dynamically links `libxml2.so.<N>` (currently `.16` on Ubuntu 24.10+ / Debian Trixie+, `.2` on older glibc distros). A bundle built on Ubuntu 25.10 will fail with `libxml2.so.16: cannot open shared object file` when run on Debian 12 / Ubuntu 22.04. Truly hermetic ldd-bundling is future work; today, build on the same distro family as your deployment target. See `src/runtimes/php_builder.c` block comment.
+- **Release script**: previous `create-release.sh` had two bugs that would have corrupted a release (`sed s/#define UBUILDER_VERSION.*/.../` clobbered MAJOR/MINOR/PATCH to the same string; CHANGELOG step always prepended a stub that pushed curated content down). Both fixed; the script now supports `--dry-run` and is idempotent on a pre-bumped tree.
 
 ## [2.0.1] - 2025-06-25
 

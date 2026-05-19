@@ -42,6 +42,12 @@ mkdir -p "$TIER3_ROOT"
 WORK_DIR="$(mktemp -d "$TIER3_ROOT/run.XXXXXX")"
 RUNTIMES_CACHE="${UBUILDER_RUNTIMES_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/runtimes}"
 DOCKER_IMAGE="${UBUILDER_TIER3_IMAGE:-debian:12-slim}"
+# PHP M1-D needs the host's libxml2/libssl/etc. SONAMEs to be present in the
+# target image, so we cannot use debian:12-slim for PHP (libxml2.so.2 vs the
+# host's libxml2.so.16 on Ubuntu 24.10+). Default to an image that matches
+# modern Ubuntu/Debian-trixie libxml2 v2.13+ ABI; override per host if you're
+# building on a different distro family.
+DOCKER_IMAGE_PHP="${UBUILDER_TIER3_PHP_IMAGE:-ubuntu:25.10}"
 
 if [[ -t 1 ]]; then
     C_RED='\033[0;31m'; C_GRN='\033[0;32m'; C_YEL='\033[1;33m'; C_DIM='\033[2m'; C_RST='\033[0m'
@@ -112,6 +118,79 @@ run_in_docker() {
             exec </dev/null /tmp/bundle "$@"' \
         -- "hello world" "it's" "ok" \
         < "$bundle" >"$stdout" 2>"$stderr"
+}
+
+run_php_in_docker() {
+    # PHP M1-D variant: bundle ships its own bin/php hardlinked from the
+    # host's /usr/bin/php, plus the .so extensions it needs. The target
+    # image therefore must have the same SONAME family of PHP's shared
+    # libs (libxml2.so.16, libssl.so.3, libsodium.so.23, etc.). We install
+    # `php-cli` in the container for its TRANSITIVE shared-lib deps, then
+    # *delete /usr/bin/php* so this remains a real test that the bundle
+    # uses its own bundled bin/php, not the container's PHP.
+    local bundle="$1" stdout="$2" stderr="$3"
+    docker run --rm -i \
+        --entrypoint /bin/sh \
+        "$DOCKER_IMAGE_PHP" \
+        -c 'set -e
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -q >/dev/null
+            apt-get install -y -q --no-install-recommends php-cli >/dev/null
+            # Prove the bundle is using its OWN bin/php, not the container'\''s.
+            rm -f /usr/bin/php /usr/bin/php[0-9] /usr/bin/php[0-9]\.* 2>/dev/null || true
+            cat > /tmp/bundle
+            chmod +x /tmp/bundle
+            exec </dev/null /tmp/bundle "$@"' \
+        -- "hello world" "it's" "ok" \
+        < "$bundle" >"$stdout" 2>"$stderr"
+}
+
+run_one_php() {
+    # PHP doesn't use --runtime-source (M1-D synthesizes from host /usr/bin/php
+    # via php_stage_synthetic_runtime). Otherwise mirrors run_one's structure.
+    local fixture="$1" backend="$2"
+    local cw="$WORK_DIR/php-$fixture"
+    local fdir="$FIXTURE_DIR/$fixture"
+    mkdir -p "$cw"
+
+    log ""
+    log "── php / $fixture (Tier-3 via $backend, image=$DOCKER_IMAGE_PHP) ──"
+    if [[ "$backend" != "docker" ]]; then
+        warn "PHP tier-3 only implemented via docker; skipping under '$backend'"
+        return 0
+    fi
+    if ! command -v php >/dev/null; then warn "host php missing; skipping"; return 0; fi
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/app" \
+            >"$cw/build.log" 2>&1; then
+        fail "ubuilder build failed (see $cw/build.log)"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    chmod +x "$cw/app"
+    ok "bundle built ($(du -h "$cw/app" | cut -f1))"
+
+    local stdout="$cw/stdout.txt" stderr="$cw/stderr.txt"
+    local exit_code=0
+    run_php_in_docker "$cw/app" "$stdout" "$stderr" || exit_code=$?
+
+    local rc=0
+    if (( exit_code != 0 )); then
+        fail "bundle exited $exit_code (expected 0)"
+        sed 's/^/    [stderr] /' "$stderr" | tail -n 15
+        rc=1
+    fi
+    if ! diff -u "$fdir/expected.txt" "$stdout" >"$cw/stdout.diff" 2>&1; then
+        fail "stdout differs from expected"
+        sed 's/^/    /' "$cw/stdout.diff" | head -n 30
+        rc=1
+    fi
+    if (( rc == 0 )); then
+        ok "bundle runs in $DOCKER_IMAGE_PHP (php-cli libs only, /usr/bin/php removed) — TIER-3 PASS (host-bits-hermetic)"
+    fi
+    return $rc
 }
 
 run_in_bwrap() {
@@ -220,7 +299,7 @@ run_one() {
 # ---- main ----------------------------------------------------------------
 
 if (($# == 0)); then
-    REQUESTED=(python nodejs)
+    REQUESTED=(python nodejs php)
 else
     REQUESTED=("$@")
 fi
@@ -240,9 +319,18 @@ fi
 
 failures=0
 for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "php" ]]; then
+        # PHP uses a separate runner (M1-D synthesis, different docker image).
+        # Two fixtures: the basic one (no composer) and the with-deps one
+        # (composer + Psr\Log autoload) — both proving the bundle is portable
+        # to a clean container that has just the PHP shared-lib family.
+        run_one_php php           "$BACKEND" || ((failures++))
+        run_one_php php-with-deps "$BACKEND" || ((failures++))
+        continue
+    fi
     meta="$(runtime_meta "$rt" || true)"
     if [[ -z "$meta" ]]; then
-        warn "no Tier-3 entry for runtime '$rt' (PHP intentionally skipped — no upstream static PHP)"
+        warn "no Tier-3 entry for runtime '$rt'"
         continue
     fi
     # shellcheck disable=SC2086

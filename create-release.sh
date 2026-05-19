@@ -133,11 +133,15 @@ if [ -f "src/core/ubuilder.h" ]; then
 fi
 
 # CHANGELOG: convert "[Unreleased]" → "[VERSION] - DATE" if present; that
-# preserves the curated unreleased block. Only fall back to prepending a
-# stub when no Unreleased header exists.
+# preserves the curated unreleased block. If [VERSION] is already there
+# (operator pre-dated it manually), leave it alone — the step is idempotent.
+# Only fall back to prepending a stub when neither header exists.
 TODAY=$(date +%Y-%m-%d)
 if [ -f "CHANGELOG.md" ]; then
-    if grep -qE "^## \\[Unreleased\\]" CHANGELOG.md; then
+    # Check both "[v2.1.0]" and "[2.1.0]" — Keep-a-Changelog drops the v.
+    if grep -qE "^## \\[(${VERSION}|${NUMERIC_VERSION})\\]" CHANGELOG.md; then
+        print_status "CHANGELOG.md already has an entry for this version — no edit needed"
+    elif grep -qE "^## \\[Unreleased\\]" CHANGELOG.md; then
         apply_sed CHANGELOG.md "s/^## \\[Unreleased\\].*$/## [$VERSION] - $TODAY/"
     else
         print_warning "CHANGELOG.md has no [Unreleased] block — prepending a stub"

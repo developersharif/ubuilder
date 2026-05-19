@@ -127,7 +127,7 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . -j
 ./tests/test_ubuilder                       # 184/184 unit tests
 ../tests/bundle/run-bundle-tests.sh         # 13/13 end-to-end bundle cases
-../tests/bundle/run-tier3.sh                # 2/2 hermetic Docker isolation cases
+../tests/bundle/run-tier3.sh                # 4/4 Docker portability cases (py+node fully hermetic, php host-bits-hermetic)
 ```
 
 Useful CMake options (top-level `CMakeLists.txt`):
