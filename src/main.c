@@ -487,7 +487,15 @@ int main(int argc, char* argv[]) {
 
     result = ub_build_executable(&config);
     if (result != UB_SUCCESS) {
-        fprintf(stderr, "Error: Build failed: %s\n", ub_error_string(result));
+        /* Skip the generic category roll-up for UB_ERROR_INVALID_ARGS —
+         * those cases always print specific guidance downstream (e.g. the
+         * "output path is a directory" message in copy_executable_template),
+         * and the "Error: Build failed: Invalid arguments" tail just adds
+         * noise. Keep the wrapper for other failure modes (memory, I/O,
+         * spawn) where the downstream might not always print context. */
+        if (result != UB_ERROR_INVALID_ARGS) {
+            fprintf(stderr, "Error: Build failed: %s\n", ub_error_string(result));
+        }
         ub_config_free(cfg_file);
         free_config(&config);
         free(config_path);

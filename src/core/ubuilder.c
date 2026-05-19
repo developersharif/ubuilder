@@ -689,11 +689,11 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
     printf("Estimated runtime size: %.1f MB\n", builder->estimated_runtime_size / (1024.0 * 1024.0));
     
     // 1. Copy current executable as template
+    // copy_executable_template emits its own specific error (path-is-a-dir,
+    // permission-denied with errno, etc.) — no need to layer a generic
+    // wrapper on top.
     result = copy_executable_template(config->output_path);
-    if (result != UB_SUCCESS) {
-        fprintf(stderr, "Error: Failed to copy executable template\n");
-        return result;
-    }
+    if (result != UB_SUCCESS) return result;
     
     // 2. Open output file for appending runtime-specific data
     FILE* output_file = fopen(config->output_path, "ab");
