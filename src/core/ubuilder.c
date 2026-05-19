@@ -573,20 +573,69 @@ static ub_result_t copy_executable_template(const char* output_path) {
     char buffer[8192];
     size_t bytes_read;
     ub_result_t result = UB_SUCCESS;
-    
+
     /* S4: collapsed via pc_executable_path. */
     char exe_path[1024];
     if (pc_executable_path(exe_path, sizeof(exe_path)) != 0) {
+        fprintf(stderr, "Error: could not resolve the running ubuilder binary's own path\n");
         return UB_ERROR_FILE_NOT_FOUND;
     }
 
     src = fopen(exe_path, "rb");
     if (!src) {
+        fprintf(stderr, "Error: cannot read ubuilder binary at %s: %s\n",
+                exe_path, strerror(errno));
         return UB_ERROR_FILE_NOT_FOUND;
     }
-    
+
+    /* DX: most output_path failures come from one of three predictable shapes.
+     * Detect each and emit an actionable message before the generic
+     * "Resource extraction failed" rolls up the stack. */
+    {
+        struct stat st;
+        if (stat(output_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            fprintf(stderr,
+                "Error: output path '%s' exists and is a directory.\n"
+                "       ubuilder needs to write a regular file there. Either remove\n"
+                "       the directory (rm -rf '%s') or set a different \"output\"\n"
+                "       in ubuilder.json (or pass --output=<path>).\n",
+                output_path, output_path);
+            fclose(src);
+            return UB_ERROR_INVALID_ARGS;
+        }
+    }
+
+    /* Auto-create the parent directory if it doesn't exist. Without this,
+     * "output": "dist/app" fails the first time because dist/ isn't there. */
+    {
+        const char* slash = NULL;
+        for (const char* p = output_path; *p; p++) {
+            if (*p == '/' || *p == '\\') slash = p;
+        }
+        if (slash && slash != output_path) {
+            size_t dir_len = (size_t)(slash - output_path);
+            if (dir_len > 0 && dir_len < 1024) {
+                char parent[1024];
+                memcpy(parent, output_path, dir_len);
+                parent[dir_len] = 0;
+                struct stat pst;
+                if (stat(parent, &pst) != 0) {
+                    if (pc_mkdir_p(parent) != 0) {
+                        fprintf(stderr,
+                            "Error: cannot create parent directory '%s': %s\n",
+                            parent, strerror(errno));
+                        fclose(src);
+                        return UB_ERROR_EXTRACTION_FAILED;
+                    }
+                }
+            }
+        }
+    }
+
     dst = fopen(output_path, "wb");
     if (!dst) {
+        fprintf(stderr, "Error: cannot open output '%s' for writing: %s\n",
+                output_path, strerror(errno));
         fclose(src);
         return UB_ERROR_EXTRACTION_FAILED;
     }
