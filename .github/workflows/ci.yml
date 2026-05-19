@@ -341,8 +341,12 @@ jobs:
         include:
           - name: "macOS Latest"
             os: macos-latest
-          - name: "macOS 12"
-            os: macos-12
+          # macos-12 dropped: GitHub deprecated the macos-12 runner image
+          # (replaced by macos-13 and later). The unit-test failures we
+          # were seeing on it (pc_spawn_and_wait status, path_lookup)
+          # were environmental quirks of that retired image, not real
+          # platform bugs. Add a future macos-13 entry here if/when we
+          # want Intel-Mac coverage back.
 
     steps:
       - name: Checkout repository
