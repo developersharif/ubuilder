@@ -1,4 +1,5 @@
 #include "runtime_embedder.h"
+#include "../core/ubuilder.h"   /* for ub_verbose */
 #include "../core/platform_compat.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1131,7 +1132,7 @@ ub_result_t ub_embed_runtime_tree(const char* source_dir, FILE* output_file) {
     if (fwrite(&sentinel, sizeof(sentinel), 1, output_file) != 1)
         return UB_ERROR_EXTRACTION_FAILED;
 
-    printf("Embedded %u files from %s\n", (unsigned)count, source_dir);
+    if (ub_verbose) printf("Embedded %u files from %s\n", (unsigned)count, source_dir);
     return UB_SUCCESS;
 }
 

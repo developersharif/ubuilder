@@ -456,6 +456,9 @@ int main(int argc, char* argv[]) {
      * the user explicitly set, and before validate_required so the
      * "output is required" check sees the defaulted value. */
     result = fill_defaults(&config);
+    /* Publish verbose to the global so embedder/install-cache helpers
+     * (which don't take ub_config_t) can gate their info prints. */
+    ub_verbose = config.verbose;
     if (result != UB_SUCCESS) {
         ub_config_free(cfg_file);
         free_config(&config);

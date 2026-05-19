@@ -575,7 +575,9 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         free(php_bin);
         return UB_ERROR_RUNTIME_NOT_FOUND;
     }
-    printf("Host PHP: %s\n  extension_dir: %s\n", php_bin, ext_dir_host);
+    if (config && config->verbose) {
+        printf("Host PHP: %s\n  extension_dir: %s\n", php_bin, ext_dir_host);
+    }
 
     /* DEFAULT BUNDLING POLICY: copy ALL .so files from the host's
      * extension_dir, then drop anything the user listed in `exclude`.
@@ -673,7 +675,9 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         return result;
     }
 
-    printf("Embedding PHP synthetic runtime tree: %s\n", stage);
+    if (config && config->verbose) {
+        printf("Embedding PHP synthetic runtime tree: %s\n", stage);
+    }
     result = ub_embed_runtime_tree(stage, output_file);
     pc_remove_tree(stage);
     return result;
@@ -1202,8 +1206,10 @@ static ub_result_t php_maybe_stage_project_with_deps(const ub_config_t* config,
     else                    snprintf(stage, sizeof(stage), "/tmp/ubuilder-php-app-%d",                  (int)getpid());
 
     pc_remove_tree(stage);
-    printf("Staging PHP project for composer install:\n");
-    printf("  source: %s\n  stage:  %s\n", config->project_dir, stage);
+    if (config->verbose) {
+        printf("Staging PHP project for composer install:\n");
+        printf("  source: %s\n  stage:  %s\n", config->project_dir, stage);
+    }
     if (pc_copy_or_link_tree(config->project_dir, stage) != 0) {
         fprintf(stderr, "Error: failed to stage project at %s\n", stage);
         pc_remove_tree(stage);
@@ -1236,10 +1242,16 @@ static ub_result_t php_maybe_stage_project_with_deps(const ub_config_t* config,
         return UB_SUCCESS;
     }
 
-    /* Cache miss: composer install in the stage. */
+    /* Cache miss: composer install in the stage. The headline summary
+     * stays on by default (composer install can take a while; users
+     * want to know what's happening), but the detail lines (composer
+     * binary path, --ignore-platform-req flags we built up) are gated
+     * on --verbose. */
     printf("Running composer install in staged project%s\n",
            have_lock ? " (lockfile present)" : "");
-    printf("  composer: %s\n", composer);
+    if (config->verbose) {
+        printf("  composer: %s\n", composer);
+    }
 
     /* Build argv dynamically — for each --excluded `ext-<name>` we ALSO
      * need to pass --ignore-platform-req=ext-<name> so composer doesn't
@@ -1282,6 +1294,9 @@ static ub_result_t php_maybe_stage_project_with_deps(const ub_config_t* config,
             snprintf(flag, (size_t)len + 1, "--ignore-platform-req=%s", p);
             argv[a++]    = flag;
             to_free[tf++] = flag;
+            /* User opted to exclude this ext — confirm the platform-req
+             * pass took effect (parallels the "(excluded by config; not
+             * staged)" lines we always print). */
             printf("  passing %s\n", flag);
         }
     }

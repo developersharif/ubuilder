@@ -39,6 +39,11 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
 // Global state
 static int g_initialized = 0;
 
+/* Verbose flag (see declaration in ubuilder.h). Default off; main.c sets
+ * it from the resolved config so embedder/install-cache/etc. can gate
+ * their info prints without plumbing config through everywhere. */
+int ub_verbose = 0;
+
 /* Version string — derived from UBUILDER_VERSION_{MAJOR,MINOR,PATCH} in
  * ubuilder.h so create-release.sh only has to bump three macros, not
  * search-and-replace hardcoded literals across the tree. */
@@ -206,16 +211,21 @@ ub_result_t ub_build_executable(const ub_config_t* config) {
         return UB_ERROR_INVALID_ARGS;
     }
     
-    printf("Building executable for runtime: %d\n", config->runtime);
-    printf("Project directory: %s\n", config->project_dir);
-    printf("Output path: %s\n", config->output_path);
-    
+    if (config->verbose) {
+        printf("Building executable for runtime: %d\n", config->runtime);
+        printf("Project directory: %s\n", config->project_dir);
+        printf("Output path: %s\n", config->output_path);
+    }
+
     // Use Phase 3 modular runtime system
     ub_result_t result = create_modular_executable(config);
     if (result != UB_SUCCESS) {
         return result;
     }
-    
+
+    /* The final "created" line is the one a user actually needs; keep it
+     * in default mode. (create_modular_executable's internal "Successfully
+     * created modular PHP executable: ..." duplicate is gated separately.) */
     printf("Successfully created executable: %s\n", config->output_path);
     return UB_SUCCESS;
 }
@@ -695,8 +705,11 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
         return result;
     }
     
-    printf("Using %s runtime builder (%s)\n", builder->name, builder->description);
-    printf("Estimated runtime size: %.1f MB\n", builder->estimated_runtime_size / (1024.0 * 1024.0));
+    if (config->verbose) {
+        printf("Using %s runtime builder (%s)\n", builder->name, builder->description);
+        printf("Estimated runtime size: %.1f MB\n",
+               builder->estimated_runtime_size / (1024.0 * 1024.0));
+    }
     
     // 1. Copy current executable as template
     // copy_executable_template emits its own specific error (path-is-a-dir,
@@ -799,8 +812,11 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
         char hex[65];
         ub_sha256_hex(payload_hash, hex);
         printf("Payload SHA-256: %s\n", hex);
+        /* Duplicate of ub_build_executable's "Successfully created
+         * executable:" line — only show in verbose. */
+        printf("Successfully created modular %s executable: %s\n",
+               builder->name, config->output_path);
     }
-    printf("Successfully created modular %s executable: %s\n", builder->name, config->output_path);
     return UB_SUCCESS;
 }
 

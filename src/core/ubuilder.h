@@ -115,6 +115,13 @@ ub_result_t ub_extract_runtime(ub_runtime_type_t runtime, const char* temp_dir);
 ub_result_t ub_execute_application(const char* temp_dir, const char* entry_point, int argc, char** argv);
 ub_result_t ub_check_and_run_embedded_app(int argc, char* argv[]);
 
+/* Global verbose flag — set by main.c from the parsed config.verbose.
+ * Code paths that don't have direct access to ub_config_t (the embedder,
+ * the install-cache helpers, runtime-specific staging utilities) check
+ * this to gate the noisy "Embedded N files...", "Staged from...", etc.
+ * lines. Zero on a default-build, 1 under --verbose. */
+extern int ub_verbose;
+
 // Utility functions
 const char* ub_get_version_string(void);
 const char* ub_get_platform_name(void);
