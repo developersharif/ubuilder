@@ -9,32 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Update-available banner.** Every builder-mode `ubuilder` invocation now reads (or asynchronously refreshes) a cached snapshot of the latest GitHub release. If the cache shows a newer version, a one-line banner prints to stderr telling the user to run `ubuilder --self-update`. Cache TTL: 24 hours under `$XDG_CACHE_HOME/ubuilder/last-update-check`. Stale cache fires a fork-and-detach `curl` so the current build never blocks on network. Silenced when stderr isn't a TTY (CI / pipes) or `UBUILDER_NO_UPDATE_CHECK=1` is set. Bundle launches never trigger the check.
-- **`--self-update` flag.** Resolves the latest release tag from GitHub, downloads the platform archive (`ubuilder-<linux|macos>-amd64.tar.gz`), extracts the inner `ubuilder` binary, smoke-tests it (`--version` must exit 0), and atomically replaces the running binary. Refuses if it can't write to its own path (suggests `sudo`). Cross-filesystem rename falls back to copy+replace. Windows path emits a manual-install hint.
-- **Configured `entry_point` honored by the launcher.** `php_embed_application` now writes a `.ubuilder.entry` marker as the first embedded record carrying the entry path; the launcher's extraction loop reads it and locks the script. Lets bundles use Laravel's `artisan`, Symfony's `bin/console`, or any other non-`main.php`/`index.php` entry. The marker is invisible to the PHP runtime (PHP doesn't load `.ubuilder.entry`).
-- **Argv passthrough to bundles.** `./bundle serve --port=8000`, `./bundle migrate --seed`, `./bundle -v` etc. now reach the embedded interpreter with argv intact. Previously, any `-`-prefixed argv triggered the builder-mode fallback, where getopt would error with "unrecognized option". The fix drops the (incorrect) argv sniff in `ub_check_and_run_embedded_app`; the trailing `UBUILDER_MODULAR_V4_SHA256_MARKER` is now the sole discriminator between bundle and builder.
-- **Quiet output by default; full detail under `--verbose`.** A typical PHP build went from ~20 lines of internal info to ~3 lines (host-ext count summary, composer install status, final success line). Internal banners ("Building executable for runtime: 1", "Using PHP runtime builder (...)", "Estimated runtime size", "Embedded N files from /tmp/...", "Payload SHA-256", etc.) only show under `-v`/`--verbose`. New `ub_verbose` global lets helpers that don't take `ub_config_t*` gate their info prints.
+- `--self-update` flag: downloads the latest release archive, smoke-tests
+  the new binary, atomically replaces the running one.
+- Update-available banner on each builder invocation. Cached 24h under
+  `$XDG_CACHE_HOME/ubuilder/last-update-check`; refreshed via a detached
+  curl so the build never blocks on the network. Silenced under
+  `UBUILDER_NO_UPDATE_CHECK=1` or when stderr is not a TTY.
+- `entry_point` from `ubuilder.json` is now honored at run time. Lets
+  bundles use Laravel's `artisan`, Symfony's `bin/console`, or any other
+  non-`main.php`/`index.php` entry. Implemented via a `.ubuilder.entry`
+  marker file embedded as the first record.
+- Argv passthrough: `./bundle serve --port=8000`, `./bundle migrate --seed`,
+  `./bundle -v` now reach the embedded interpreter with argv intact. The
+  trailer marker is the sole bundle/builder discriminator (previously any
+  `-`-prefixed argv triggered the builder-mode fallback).
+- Quiet output by default. A typical PHP build prints ~3 lines instead
+  of ~20. `--verbose` / `-v` restores the old detail.
 
 ### Fixed
 
-- **PHP bundle entry-point picked the wrong file.** The launcher's PHP entry-point selector only preferred `main.php`. For any project using `index.php` (or `bootstrap.php`, etc.), it picked whichever `.php` file extracted first alphabetically — for filemanager-phpgui that was `src/Icons.php`, a class file with no top-level code, so the bundle launched, ran an empty file, and exited 0 silently. Verified via `strace -e execve`: `execve(.../bin/php, [..., "Icons.php"], ...)`. (`src/core/ubuilder.c`)
-- **FFI silently disabled inside the bundle.** PHP 8+ defaults to `ffi.enable=preload`, which disables FFI in CLI mode unless `opcache.preload` is configured — bundles run as standalone CLI processes (no preload step), so FFI calls were silently no-op'd. Generated `99-ubuilder-overrides.ini` now forces `ffi.enable=true`. Required for any FFI-driven app (php-gui, php-tk, swoole, etc.) to actually function.
+- PHP entry-point selector picked the first `.php` file alphabetically
+  when `main.php` was absent, so projects using `index.php` ran a class
+  file from `src/` instead of the real entry. Now prefers `main.php`
+  then root-level `index.php` then any `.php` as fallback (or the
+  `.ubuilder.entry` marker when present).
+- FFI silently no-op'd in bundles. PHP 8+ defaults to
+  `ffi.enable=preload`, which disables FFI in CLI mode. The generated
+  `99-ubuilder-overrides.ini` now sets `ffi.enable=true`. Required for
+  any FFI-based app (php-gui, php-tk, swoole, etc.) to function.
 
 ### Changed
 
-- **PHP bundling switched to "copy host's actual config".** v2.1.1 generated a synthetic `php.ini` with a hand-curated extension load-order priority table — guessing which extensions Debian/RHEL/Arch load first. v2.1.2 instead copies the host's loaded `php.ini` verbatim into the bundle and copies every `<NN>-<ext>.ini` fragment from the host's `conf.d/` (following symlinks into `mods-available/`). The numeric prefixes in those fragments encode the right load order (10-mysqlnd before 20-mysqli, 15-xml before 20-dom, etc.), so no guessing.
-  - New `php_probe_ini_paths()` runs `php --ini` and parses the two paths.
-  - New `php_copy_host_confd()` follows symlinks and skips fragments for `--excluded` extensions.
-  - New `99-ubuilder-overrides.ini` placed at high priority in the bundle's `conf.d/` to force `ffi.enable=true`, `opcache.validate_timestamps=0`, and `phar.readonly=0` without touching the user's other settings.
-  - Launcher sets `PHP_INI_SCAN_DIR=<runtime_dir>/conf.d` so PHP auto-loads the copied fragments in priority order.
-- **PHP extension bundling is now "copy ALL host extensions by default".** Same intent as v2.1.1's late change, but cleaner: the host's `conf.d/<NN>-<ext>.ini` fragments are what activates each `extension=<name>` line, so we just copy them along with every `.so` from the host's `extension_dir`. The user's `--exclude=ext-<name>` drops both the `.so` and the corresponding conf.d fragment so PHP doesn't try to load it.
-- The synthetic-runtime build log shows the per-extension `+ <name>` list only under `--verbose`; non-verbose mode prints a single `Bundling N host PHP extensions from <dir>` summary line.
+- PHP bundles now copy the host's actual `php.ini` and `conf.d/`
+  (following symlinks into `mods-available/`). The numeric prefixes on
+  the conf.d files (`10-mysqlnd.ini`, `15-xml.ini`, `20-pdo_mysql.ini`,
+  …) encode the correct load order, so we no longer guess at it. A
+  `99-ubuilder-overrides.ini` is layered on top with the minimum forced
+  settings (`ffi.enable=true`, `opcache.validate_timestamps=0`,
+  `phar.readonly=0`).
+- PHP bundles copy every `.so` from the host's `extension_dir` by
+  default. `--exclude=ext-<name>` drops both the `.so` and the matching
+  conf.d fragment.
+- Launcher sets `PHP_INI_SCAN_DIR=<runtime_dir>/conf.d` so the bundle's
+  PHP loads the copied fragments in priority order.
+- Repository layout: `build-all.sh` and `create-release.sh` moved from
+  the repo root into `scripts/`. Docs split into `docs/user/` and
+  `docs/internals/`.
 
-### Test coverage
+### Tests
 
-- `tests/test_php_builder.c` updated to assert the new overrides snippet (only `ffi.enable`, `opcache.validate_timestamps=0`, `phar.readonly=0`; no enumerated `extension=` lines, no `memory_limit` — those come from the copied host php.ini now).
-- `tests/bundle/run-bundle-tests.sh` — `php-exclude-ext` assertion switched from per-name "(excluded by config; not staged)" log line (only fires when the extension is on host) to the `passing --ignore-platform-req=ext-<name>` line that composer install receives (fires regardless).
-- All 184 unit assertions + 13 bundle cases passing on Ubuntu 25.10.
+- 184 unit assertions + 13 bundle cases + 4 tier-3 docker cases pass
+  on Ubuntu 25.10.
 
 ## [2.1.1] - 2026-05-19
 
