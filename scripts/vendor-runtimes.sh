@@ -18,6 +18,24 @@ set -euo pipefail
 
 CACHE_ROOT="${UBUILDER_RUNTIMES_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/runtimes}"
 
+# Quiet mode. Triggered by UBUILDER_AUTO_VENDOR=1, which ubuilder sets
+# when auto-spawning the script. Interactive callers see the full chatter
+# unless they pass UBUILDER_VENDOR_QUIET=1; auto-callers can re-enable
+# verbose output with UBUILDER_VENDOR_VERBOSE=1.
+if [[ "${UBUILDER_VENDOR_VERBOSE:-}" == "1" ]]; then
+    QUIET=0
+elif [[ "${UBUILDER_VENDOR_QUIET:-}" == "1" || "${UBUILDER_AUTO_VENDOR:-}" == "1" ]]; then
+    QUIET=1
+else
+    QUIET=0
+fi
+if (( QUIET )); then
+    CURL_ARGS=(--fail --location --retry 3 --silent --show-error)
+else
+    CURL_ARGS=(--fail --location --retry 3 --progress-bar)
+fi
+say() { (( QUIET )) || printf '%s\n' "$*"; }
+
 # Detect platform/arch for tag construction.
 case "$(uname -s)" in
     Linux)  PLATFORM=linux ;;
@@ -79,7 +97,7 @@ download_one() {
     local marker="$dest/.vendor-ok"
 
     if [[ -f "$marker" ]]; then
-        printf '  %s already present at %s\n' "$runtime" "$dest"
+        say "  $runtime already present at $dest"
         return 0
     fi
 
@@ -88,27 +106,24 @@ download_one() {
     trap 'rm -rf "$tmpdir"' RETURN
 
     local tarball="$tmpdir/runtime.tarball"
-    printf '  downloading %s\n    -> %s\n' "$url" "$tarball"
-    curl -fSL --retry 3 -o "$tarball" "$url"
+    say "  downloading $url"
+    curl "${CURL_ARGS[@]}" -o "$tarball" "$url"
 
-    printf '  verifying sha256\n'
+    say "  verifying sha256"
     verify_sha "$tarball" "$sha"
 
-    printf '  extracting\n'
+    say "  extracting"
     mkdir -p "$dest"
-    # `tar -xf` autodetects gzip / xz / zstd compression.
     tar -xf "$tarball" -C "$tmpdir"
-    # python-build-standalone tarballs unpack to ./python/
     local extracted
     extracted="$(find "$tmpdir" -mindepth 1 -maxdepth 1 -type d ! -name "$(basename "$tmpdir")" | head -1)"
     if [[ -z "$extracted" ]]; then
         echo "extraction produced no directory" >&2
         return 1
     fi
-    # Copy contents of extracted/ into $dest (we already mkdir'd it).
     cp -a "$extracted"/. "$dest"/
     touch "$marker"
-    printf '  vendored %s -> %s\n' "$runtime" "$dest"
+    say "  vendored $runtime -> $dest"
 }
 
 # ----- main --------------------------------------------------------------
@@ -121,8 +136,7 @@ fi
 
 mkdir -p "$CACHE_ROOT"
 
-printf 'vendoring runtimes into %s\n' "$CACHE_ROOT"
-printf 'platform=%s arch=%s\n' "$PLATFORM" "$ARCH"
+say "vendoring runtimes into $CACHE_ROOT (platform=$PLATFORM arch=$ARCH)"
 
 declare -A SEEN
 while IFS='|' read -r runtime url sha subdir; do
@@ -132,11 +146,12 @@ while IFS='|' read -r runtime url sha subdir; do
         if [[ "$r" == "$runtime" || "$r" == "all" ]]; then want=1; break; fi
     done
     (( want )) || continue
-    printf '\n=== %s ===\n' "$runtime"
+    say ""
+    say "=== $runtime ==="
     download_one "$runtime" "$url" "$sha" "$subdir"
 done < <(manifest)
 
-# Surface unsupported requests loudly.
+# Surface unsupported requests loudly (always — even in quiet mode).
 for r in "${REQUESTED[@]}"; do
     [[ "$r" == "all" ]] && continue
     [[ -n "${SEEN[$r]:-}" ]] || {
@@ -144,4 +159,5 @@ for r in "${REQUESTED[@]}"; do
     }
 done
 
-printf '\ndone.\n'
+say ""
+say "done."

@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <time.h>
 
 #ifdef PLATFORM_WINDOWS
     #include <windows.h>
@@ -961,17 +962,34 @@ ub_result_t ub_auto_vendor(const char* runtime_key) {
     }
 
     printf("Auto-vendoring %s (one-time setup) ...\n", runtime_key);
-    printf("  script: %s\n", script);
-    fflush(stdout);   /* surface our header before the script's curl output. */
+    fflush(stdout);
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    /* Signal to the script that we're auto-spawning: suppresses curl
+     * progress and the per-step chatter. UBUILDER_VENDOR_VERBOSE=1 in
+     * the parent env still overrides. */
+    char* extra[] = { (char*)"UBUILDER_AUTO_VENDOR=1", NULL };
+    char** envp = pc_env_overlay(extra);
     char* argv[] = { bash, script, (char*)runtime_key, NULL };
-    int rc = pc_spawn_and_wait(bash, argv, NULL, NULL);
+    int rc = pc_spawn_and_wait(bash, argv, envp, NULL);
+    if (envp) pc_env_free(envp);
     free(bash);
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double elapsed = (double)(t1.tv_sec - t0.tv_sec)
+                   + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+
     if (rc != 0) {
         fprintf(stderr,
                 "note: auto-vendor failed (exit %d). Check network access\n"
-                "      or run the script manually for a clearer error.\n", rc);
+                "      or run %s manually for a clearer error.\n"
+                "      Re-run with UBUILDER_VENDOR_VERBOSE=1 to see curl progress.\n",
+                rc, script);
         return UB_ERROR_EXECUTION_FAILED;
     }
+    printf("Auto-vendor: %s ready in %.1fs.\n", runtime_key, elapsed);
     return UB_SUCCESS;
 }
 #else
