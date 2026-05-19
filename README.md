@@ -1,140 +1,389 @@
-# UBuilder — single-file hermetic executables for Python, PHP, and Node.js apps
+# UBuilder
+
+> **Turn a Python, Node.js, or PHP project into one executable that runs anywhere — no interpreter, no `pip install`, no `npm install` on the target machine.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/developersharif/ubuilder/workflows/UBuilder%20Cross-Platform%20CI/badge.svg)](https://github.com/developersharif/ubuilder/actions)
-[![Linux](https://img.shields.io/badge/platform-Linux-blue.svg)]()
-[![macOS](https://img.shields.io/badge/platform-macOS-blue.svg)]()
-[![Windows](https://img.shields.io/badge/platform-Windows-blue.svg)]()
+[![Linux](https://img.shields.io/badge/Linux-supported-success.svg)]()
+[![macOS](https://img.shields.io/badge/macOS-supported-success.svg)]()
+[![Windows](https://img.shields.io/badge/Windows-supported-success.svg)]()
 
-> Drop a Python, Node.js, or PHP app into a directory. Run `ubuilder`. Get one self-contained executable that runs on any machine of the same OS/arch — **no Python, no Node, no PHP, no `pip install`, no `npm install` required on the target.**
+UBuilder packages your app, its interpreter (Python / Node.js / PHP), and every third-party dependency into one self-contained binary. The binary is integrity-checked at startup (SHA-256 over the payload) and extracts itself to a temp directory at launch. Build machines need nothing global installed either — the first run downloads pinned interpreter tarballs into a local cache.
 
-UBuilder bundles a vendored interpreter, your application, and all third-party dependencies into a single executable. The output is integrity-checked (SHA-256 over the payload) and extracts itself to a temp directory at launch. No global installs on the build machine either — the first run downloads pinned interpreter tarballs into a local cache.
+```bash
+cd my-app/                   # contains main.py + (optional) requirements.txt
+ubuilder                     # produces one executable named after the dir
+./my-app                     # runs anywhere with no Python installed
+```
+
+---
+
+## Install
+
+Choose your platform. Each option downloads the binary from the latest [GitHub Release](https://github.com/developersharif/ubuilder/releases/latest) and puts it on your `PATH`.
+
+### Linux (x86_64)
+
+```bash
+curl -L https://github.com/developersharif/ubuilder/releases/latest/download/ubuilder-linux-amd64.tar.gz \
+  | tar -xz
+sudo mv ubuilder /usr/local/bin/
+ubuilder --version
+```
+
+Or unprivileged, into `~/.local/bin`:
+
+```bash
+mkdir -p ~/.local/bin
+curl -L https://github.com/developersharif/ubuilder/releases/latest/download/ubuilder-linux-amd64.tar.gz \
+  | tar -xz -C ~/.local/bin ubuilder
+# add ~/.local/bin to PATH if it isn't already
+```
+
+### macOS (Apple Silicon)
+
+```bash
+curl -L https://github.com/developersharif/ubuilder/releases/latest/download/ubuilder-macos-amd64.tar.gz \
+  | tar -xz
+sudo mv ubuilder /usr/local/bin/
+xattr -d com.apple.quarantine /usr/local/bin/ubuilder 2>/dev/null || true
+ubuilder --version
+```
+
+The `xattr` line removes Gatekeeper's quarantine flag on the downloaded binary.
+
+**Important — Intel Macs:** the published `ubuilder-macos-amd64.tar.gz` archive is actually an **arm64** binary (the CI macOS runner is `macos-15-arm64`; the `-amd64` suffix is a historical naming artifact). If you're on an Intel Mac, [build from source](#from-source-all-platforms) — it takes under a minute.
+
+### Windows (x86_64)
+
+PowerShell:
+
+```powershell
+$url = "https://github.com/developersharif/ubuilder/releases/latest/download/ubuilder-windows-amd64.zip"
+Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\ubuilder.zip"
+Expand-Archive -Path "$env:TEMP\ubuilder.zip" -DestinationPath "$env:USERPROFILE\ubuilder" -Force
+$env:Path += ";$env:USERPROFILE\ubuilder"
+ubuilder --version
+```
+
+To persist `PATH`: **System Properties → Environment Variables → Path → add `%USERPROFILE%\ubuilder`**, or run once:
+
+```powershell
+[Environment]::SetEnvironmentVariable("Path", $env:Path, "User")
+```
+
+### From source (all platforms)
+
+Requires CMake ≥ 3.16, a C11/C++17 compiler (GCC/Clang/MSVC), and `zlib` headers.
+
+```bash
+git clone https://github.com/developersharif/ubuilder.git
+cd ubuilder
+mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake --build . -j
+sudo cp src/ubuilder /usr/local/bin/         # or wherever you like
+```
+
+See [Build from source](#build-from-source) below for CMake options.
 
 ---
 
 ## Quick start
 
+You only need **two things** in your project directory:
+
+1. The app itself (`main.py`, `main.js`, `main.php`, or `index.*`).
+2. A `ubuilder.json` manifest — or just let `ubuilder` write one for you on the first build.
+
+### Python
+
 ```bash
-# 1. cd into your app
-cd my-python-app/        # contains main.py + (optional) requirements.txt
+mkdir hello-py && cd hello-py
+cat > main.py <<'EOF'
+import sys
+print(f"Hello from Python, args: {sys.argv[1:]}")
+EOF
 
-# 2. drop in a one-line manifest
-echo '{"runtime":"python","entry_point":"main.py"}' > ubuilder.json
+ubuilder                                # auto-writes ubuilder.json on first run
+./hello-py world
+# → Hello from Python, args: ['world']
+```
 
-# 3. build
+With dependencies:
+
+```bash
+cat > requirements.txt <<'EOF'
+attrs==23.2.0
+EOF
+ubuilder                                # pip-installs attrs into the bundle
+./hello-py
+```
+
+### Node.js
+
+```bash
+mkdir hello-node && cd hello-node
+cat > main.js <<'EOF'
+console.log("Hello from Node, args:", process.argv.slice(2));
+EOF
+echo '{"runtime":"node","entry_point":"main.js"}' > ubuilder.json
+
 ubuilder
-
-# 4. ship the result
-./my-python-app          # runs on any Linux x86_64 with no Python installed
+./hello-node world
 ```
 
-That's it. No flags, no environment setup. The first invocation auto-vendors the interpreter (~32 MB Python or ~30 MB Node, cached under `~/.cache/ubuilder/`). Subsequent builds reuse the cache.
-
-### Three runtimes, one workflow
+With dependencies:
 
 ```bash
-# Python — pip-installs requirements.txt into the staged interpreter
-cd python-app && ubuilder
-
-# Node.js — npm-installs package.json into a staged project tree
-cd node-app && ubuilder
-
-# PHP — currently host-fallback only; M1-D hermetic build is on the roadmap
-cd php-app && ubuilder
+cat > package.json <<'EOF'
+{ "dependencies": { "picocolors": "1.1.1" } }
+EOF
+ubuilder                                # npm-installs into the staged project
 ```
 
+### PHP
+
+```bash
+mkdir hello-php && cd hello-php
+cat > main.php <<'EOF'
+<?php
+echo "Hello from PHP, args: " . implode(",", array_slice($argv, 1)) . "\n";
+EOF
+echo '{"runtime":"php","entry_point":"main.php"}' > ubuilder.json
+
+ubuilder
+./hello-php world
+```
+
+With Composer:
+
+```bash
+cat > composer.json <<'EOF'
+{
+  "require": { "psr/log": "^1.1" }
+}
+EOF
+ubuilder                                # composer install runs in a staged copy
+```
+
+PHP bundles work only on machines with PHP's shared libraries installed (`libxml2`, `libssl`, `libsodium`, …). For most servers this is a non-issue (any host with `php-cli` available). See [Status](#status) for the libxml2 SONAME caveat.
+
 ---
 
-## What you get
+## Usage examples
 
-- **True zero-dep output.** The generated binary embeds the interpreter and every dependency. Strip `PATH` to `/usr/bin:/bin` and run the bundle in a `debian:12-slim` container — it works.
-- **Integrity at the boundary.** Every bundle ends in a V4 trailer with SHA-256 over the payload. Tampered bundles refuse to run.
-- **Apple-style sandbox discipline.** No `system()`, no `popen()`, no silent host fallback in hermetic mode. Every spawn goes through a structured-argv shim (`posix_spawnp` / `CreateProcess`). See [`docs/architecture/ARCHITECTURE_AUDIT.md`](docs/architecture/ARCHITECTURE_AUDIT.md).
-- **Reproducible-ish.** Interpreter tarballs are pinned by SHA-256 in `scripts/vendor-runtimes.sh`. Lockfile support for user deps is on the roadmap (item #3).
+### Drop files from the bundle
 
----
+```bash
+# Exclude tests/ docs/ and *.md files from the embedded app tree
+ubuilder --exclude='tests/**' --exclude='docs/**' --exclude='*.md'
+```
 
-## How it works
+Or in `ubuilder.json`:
 
-1. **Build mode** — `ubuilder` looks for `ubuilder.json` in `.` or `--project-dir`, picks a runtime builder, and writes a new executable laid out as:
-   `[ubuilder launcher][runtime tree][app tree][V4 trailer with SHA-256]`.
-2. **Launcher mode** — when the generated binary runs, it detects the trailer, verifies the SHA-256, extracts the payload to a temp dir, and execs the embedded interpreter against the embedded entry point.
-3. **Hermeticity** — at build time the runtime comes from `~/.cache/ubuilder/runtimes/<rt>/`. If the cache is empty, `scripts/vendor-runtimes.sh` is auto-spawned to populate it from upstream (python-build-standalone, nodejs.org).
-4. **User deps** — if your project has `requirements.txt` (Python) or `package.json` (Node), they're installed into a *staged* copy of the runtime/project before bundling. The shared cache is never polluted.
+```json
+{
+  "runtime": "python",
+  "entry_point": "main.py",
+  "exclude": ["tests/**", "docs/**", "*.md"]
+}
+```
 
-Deep dives:
-- [`docs/architecture/ARCHITECTURE_AUDIT.md`](docs/architecture/ARCHITECTURE_AUDIT.md) — the engineering audit + the binding hermeticity principles.
-- [`docs/architecture/M1_HERMETIC_INTERPRETERS.md`](docs/architecture/M1_HERMETIC_INTERPRETERS.md) — vendoring strategy and `--runtime-source` precedence.
-- [`docs/architecture/M8_USER_DEPS.md`](docs/architecture/M8_USER_DEPS.md) — per-runtime dep-install mechanics.
-- [`docs/architecture/CONFIG_FILE_SPEC.md`](docs/architecture/CONFIG_FILE_SPEC.md) — full `ubuilder.json` schema.
-- [`docs/architecture/STATIC_LAUNCHER.md`](docs/architecture/STATIC_LAUNCHER.md) — `-DUBUILDER_STATIC=ON` for a fully static launcher (musl toolchain provided).
+### Drop a dependency from the install
 
----
+```bash
+ubuilder --exclude=six                  # Python: filters requirements.txt
+ubuilder --exclude=is-number            # Node:   filters package.json
+ubuilder --exclude=ext-curl             # PHP:    drops composer ext-* + passes --ignore-platform-req
+```
 
-## CLI flags (all optional)
+### Use a specific vendored interpreter
 
-The zero-flag path is the default. You only need these for non-default cases:
+```bash
+# Point at a directory you control instead of the cache
+ubuilder --runtime-source=/opt/my-python/
 
-| Flag | Purpose |
-|------|---------|
-| `--project-dir <path>` | Build from a directory other than `.` |
-| `--runtime <python\|php\|node>` | Override manifest |
-| `--output <path>` | Override output name (default: `<name>` from manifest) |
-| `--entry-point <file>` | Override manifest's entry point |
-| `--config <path>` | Use an explicit `ubuilder.json` |
-| `--runtime-source <path>` | Use a specific vendored interpreter tree (skips cache discovery) |
-| `--use-host-runtime` | Explicit opt-in to the host's interpreter — produces a **non-portable** bundle. Useful for fast local iteration |
-| `--no-install-deps` | Skip `pip install` / `npm install` / `composer install` step |
-| `--no-auto-vendor` | Don't auto-spawn `scripts/vendor-runtimes.sh` on cache miss |
-| `--exclude <pat>` (repeatable) | Drop files/deps from the bundle: file glob (`tests/**`, `*.md`), PHP `ext-curl`, Python wheel name (`six`), or Node module name (`is-number`). Appends to `exclude` in `ubuilder.json`. |
-| `--verbose` / `-v` | Show every spawned subprocess |
+# Or use the host's installed interpreter (NOT portable — for dev only)
+ubuilder --use-host-runtime
+```
 
-Run `ubuilder --help` for the canonical list.
+### Skip dependency installation entirely
+
+```bash
+ubuilder --no-install-deps              # use pre-existing vendor/ or node_modules/
+```
+
+### Build verbose / inspect what's happening
+
+```bash
+ubuilder --verbose                      # show every spawned subprocess
+```
+
+### Build into a specific path
+
+```bash
+ubuilder --output=dist/myapp            # output goes to ./dist/myapp
+```
+
+### See all flags
+
+```bash
+ubuilder --help
+```
 
 ---
 
 ## `ubuilder.json` manifest
 
+Minimum:
+
+```json
+{ "runtime": "python", "entry_point": "main.py" }
+```
+
+Full schema (every field optional except `runtime` + `entry_point`):
+
 ```json
 {
+  "schema_version": 1,
   "name": "my-app",
   "runtime": "python",
   "entry_point": "main.py",
+  "output": "dist/my-app",
   "exclude": ["tests/**", "*.md", "six"],
-  "build": { "compression": true, "gui": false },
+  "verbose": false,
+  "gui": false,
+  "compression": true,
   "runtime_options": {
-    "python": { "source": "...", "use_host": false, "no_install_deps": false }
+    "python": { "source": "/opt/cpython-3.12", "use_host": false }
   }
 }
 ```
 
-CLI flags override config keys (one exception: `--exclude` **appends** to `exclude`).
-A successful build with no `ubuilder.json` writes one automatically — capturing the
-resolved `runtime`, `entry_point`, `name`, and `exclude` so the next `ubuilder` run
-needs no flags.
+- **CLI flags override config keys** — except `--exclude`, which **appends** to the config's `exclude` array.
+- **Auto-write**: a successful build with no `ubuilder.json` writes one with the resolved `runtime`, `entry_point`, `name`, and `exclude`. The next `ubuilder` run needs no flags.
 
-Full schema: [`docs/architecture/CONFIG_FILE_SPEC.md`](docs/architecture/CONFIG_FILE_SPEC.md).
+Full schema docs: [`docs/architecture/CONFIG_FILE_SPEC.md`](docs/architecture/CONFIG_FILE_SPEC.md).
 
 ---
 
-## Building UBuilder from source
+## CLI flags
 
-Most users should install a release binary. To build the tool itself:
+The zero-flag path is the default. Pass these for non-default cases:
+
+| Flag | Purpose |
+|------|---------|
+| `--project-dir <path>` | Build from a directory other than `.` |
+| `--runtime <python\|php\|node>` | Override the manifest's runtime |
+| `--output <path>` | Output executable path (default: `<name>`) |
+| `--entry-point <file>` | Override the manifest's entry point |
+| `--config <path>` | Use an explicit `ubuilder.json` |
+| `--runtime-source <path>` | Use a specific vendored interpreter tree |
+| `--use-host-runtime` | Use the host's interpreter (bundle will **not** be portable) |
+| `--no-install-deps` | Skip `pip` / `npm` / `composer install` |
+| `--no-auto-vendor` | Don't auto-spawn `scripts/vendor-runtimes.sh` on cache miss |
+| `--exclude <pat>` (repeatable) | Drop a file glob, PHP ext, Python wheel, or Node module |
+| `--verbose` / `-v` | Show every spawned subprocess |
+| `--version` / `-V` | Print the ubuilder version |
+| `--help` / `-h` | Show all flags |
+
+---
+
+## Status
+
+| Runtime | Linux | macOS | Windows | Notes |
+|---|---|---|---|---|
+| **Python** | ✅ Hermetic | ✅ Hermetic | ✅ Host | Tier-3 Docker isolation passing on Linux + macOS |
+| **Node.js** | ✅ Hermetic | ✅ Hermetic | ✅ Host | Tier-3 Docker isolation passing on Linux + macOS |
+| **PHP** | ✅ Host-bits hermetic | ⚠️ Roadmap | ✅ Host | M1-D Linux ships embedded `bin/php` + composer extensions |
+
+**Known limitations** (v2.1.x):
+
+- **PHP cross-distro portability**: bundles built on one Linux distro ship that distro's `libxml2.so.<N>`. Build on the same family as your deployment target (e.g. Ubuntu 24.10+ / Debian Trixie+ both ship `libxml2.so.16`). Tracked under `src/runtimes/php_builder.c`.
+- **PHP on macOS**: M1-D's synthetic-runtime path assumes Linux's `extension_dir` layout; Homebrew PHP's Cellar isn't handled yet. `examples/build-examples-macos.sh` skips the PHP example cleanly with a message.
+- **Windows runtimes**: bundles use the host's `python.exe` / `node.exe` / `php.exe` rather than a vendored hermetic tree. Hermetic Windows is roadmap work.
+
+Full roadmap: [`docs/architecture/ROADMAP_NEXT.md`](docs/architecture/ROADMAP_NEXT.md).
+
+---
+
+## How it works
+
+UBuilder is one C binary with two modes, distinguished at startup:
+
+1. **Build mode** (no embedded payload): parse CLI + `ubuilder.json` → pick a runtime builder → write a new executable laid out as
+   `[ubuilder launcher][runtime tree][app tree][V4 trailer with SHA-256]`.
+2. **Launcher mode** (payload present): detect the trailer, verify the SHA-256, extract the payload to a temp dir, `exec` the embedded interpreter against the embedded entry point, clean up on exit.
+
+User dependencies (`requirements.txt`, `package.json`, `composer.json`) are installed into a **staged copy** of the runtime/project before bundling — the shared cache is never polluted. Successful installs are content-addressed by SHA-256(manifest + lockfile) and replayed from cache on the next build.
+
+Deep dives:
+
+- [`docs/architecture/ARCHITECTURE_AUDIT.md`](docs/architecture/ARCHITECTURE_AUDIT.md) — engineering audit + hermeticity principles
+- [`docs/architecture/M1_HERMETIC_INTERPRETERS.md`](docs/architecture/M1_HERMETIC_INTERPRETERS.md) — vendoring strategy + `--runtime-source` precedence
+- [`docs/architecture/M8_USER_DEPS.md`](docs/architecture/M8_USER_DEPS.md) — per-runtime dep-install mechanics
+- [`docs/architecture/CONFIG_FILE_SPEC.md`](docs/architecture/CONFIG_FILE_SPEC.md) — full `ubuilder.json` schema
+- [`docs/architecture/STATIC_LAUNCHER.md`](docs/architecture/STATIC_LAUNCHER.md) — `-DUBUILDER_STATIC=ON` for a fully static launcher (musl toolchain provided)
+
+---
+
+## Build from source
 
 ```bash
+git clone https://github.com/developersharif/ubuilder.git
+cd ubuilder
 mkdir -p build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . -j
+
 ./tests/test_ubuilder                       # 184/184 unit tests
 ../tests/bundle/run-bundle-tests.sh         # 13/13 end-to-end bundle cases
-../tests/bundle/run-tier3.sh                # 4/4 Docker portability cases (py+node fully hermetic, php host-bits-hermetic)
+../tests/bundle/run-tier3.sh                # 4/4 Docker portability cases (Python + Node hermetic; PHP host-bits-hermetic)
 ```
 
-Useful CMake options (top-level `CMakeLists.txt`):
+Useful CMake options:
 
-- `-DBUILD_TESTS=OFF` — skip tests
-- `-DENABLE_COMPRESSION=OFF` — disable ZLIB resource compression
-- `-DUBUILDER_STATIC=ON -DCMAKE_TOOLCHAIN_FILE=../toolchains/musl-linux-x86_64.cmake` — static-musl launcher
+| Option | Purpose |
+|---|---|
+| `-DBUILD_TESTS=OFF` | Skip building the test binary |
+| `-DENABLE_COMPRESSION=OFF` | Disable ZLIB resource compression |
+| `-DUBUILDER_STATIC=ON -DCMAKE_TOOLCHAIN_FILE=../toolchains/musl-linux-x86_64.cmake` | Build a fully static launcher against musl |
+
+After building, install the binary wherever you like (`/usr/local/bin`, `~/.local/bin`, etc.).
+
+---
+
+## Contributing
+
+Contributions welcome! Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, code conventions, and the PR workflow.
+
+A typical contributor loop:
+
+```bash
+git clone https://github.com/developersharif/ubuilder.git
+cd ubuilder
+mkdir -p build && cd build && cmake .. && cmake --build . -j
+./tests/test_ubuilder                       # all green before changes
+# ... make a change ...
+cmake --build . -j && ./tests/test_ubuilder
+../tests/bundle/run-bundle-tests.sh         # before PR
+```
+
+Areas where help is most welcome:
+
+- **Hermetic PHP on Linux** without the libxml2 SONAME caveat (ldd-driven shared-lib bundling).
+- **Hermetic PHP on macOS** — adapt `src/runtimes/php_builder.c`'s M1-D synthesis to Homebrew's Cellar layout.
+- **Hermetic Windows runtimes** — vendor a portable Python / Node tree like Linux/macOS already do.
+- **Lockfile reproducibility** for Python (`requirements.lock`) and PHP (`composer.lock`-driven `--no-deps`).
+- **More tier-3 backends** — e.g. `nix-shell` for fully reproducible Tier-3 tests.
+
+If you find a bug, please open an issue with:
+- The command you ran
+- Full `--verbose` output
+- Your `ubuilder.json` (if any)
+- Host OS + distro version
+- `ubuilder --version`
 
 ---
 
@@ -143,29 +392,18 @@ Useful CMake options (top-level `CMakeLists.txt`):
 ```
 ubuilder/
 ├── src/
-│   ├── core/                 # ubuilder.{c,h}, platform_compat, json_mini, config, sha256
-│   ├── runtimes/             # {python,php,nodejs}_{builder,runtime}.c + runtime_embedder
-│   └── main.c                # CLI entry; routes builder vs launcher mode
+│   ├── core/                    # ubuilder.{c,h}, platform_compat, json_mini, config, sha256, glob_match
+│   ├── runtimes/                # {python,php,nodejs}_{builder,runtime}.c + runtime_embedder, install_cache
+│   └── main.c                   # CLI entry; routes builder vs launcher mode
 ├── scripts/
-│   └── vendor-runtimes.sh    # SHA-pinned interpreter downloader
+│   └── vendor-runtimes.sh       # SHA-pinned interpreter downloader (Linux + macOS)
 ├── tests/
-│   ├── *.c                   # unit tests (test_ubuilder)
-│   └── bundle/               # end-to-end bundle + Tier-3 isolation harness
+│   ├── test_*.c                 # unit tests (test_ubuilder binary)
+│   └── bundle/                  # end-to-end bundle + Tier-3 isolation harness
 ├── examples/{python,php,nodejs}/
-└── docs/                     # architecture audit, M1, M8, config spec, roadmap
+├── toolchains/                  # CMake toolchain files (musl-linux-x86_64)
+└── docs/                        # architecture audit, M1, M8, config spec, roadmap, CLI reference
 ```
-
----
-
-## Status
-
-- ✅ Hermetic Python and Node.js (M1, M8) — vendor + dep install + Tier-3 Docker isolation passing.
-- ✅ Integrity-checked V4 trailer (S3).
-- ✅ Zero-flag DX via auto-vendor + auto-discover (S10).
-- ⚠️ PHP runs in host-fallback mode only. Hermetic PHP (M1-D) is blocked on building static PHP via `static-php-cli` in CI. Tracked in [`docs/architecture/ROADMAP_NEXT.md`](docs/architecture/ROADMAP_NEXT.md) item #4.
-- ⚠️ Only Linux x86_64 is vendored today. arm64 + macOS entries are roadmap item #5.
-
-Full upcoming work: [`docs/architecture/ROADMAP_NEXT.md`](docs/architecture/ROADMAP_NEXT.md).
 
 ---
 
