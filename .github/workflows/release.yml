@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get version from tag
         id: get_version
@@ -77,7 +77,7 @@ jobs:
       # Windows-specific setup
       - name: Setup Windows environment
         if: matrix.platform == 'windows'
-        uses: microsoft/setup-msbuild@v1.1
+        uses: microsoft/setup-msbuild@v2
 
       - name: Install Windows CMake
         if: matrix.platform == 'windows'
@@ -279,7 +279,7 @@ jobs:
 
       # Upload artifacts for release
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -295,7 +295,7 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Get version from tag
         id: get_version
@@ -305,7 +305,7 @@ jobs:
           echo "Creating release for version: $VERSION"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
@@ -356,7 +356,7 @@ jobs:
           EOF
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           name: UBuilder ${{ steps.get_version.outputs.VERSION }}
