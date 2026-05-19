@@ -5,7 +5,6 @@ The output runs on any machine of the same OS and architecture
 without Python, Node, PHP, `pip install`, or `npm install`.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/developersharif/ubuilder/workflows/UBuilder%20Cross-Platform%20CI/badge.svg)](https://github.com/developersharif/ubuilder/actions)
 [![Linux](https://img.shields.io/badge/Linux-supported-success.svg)]()
 [![macOS](https://img.shields.io/badge/macOS-supported-success.svg)]()
 [![Windows](https://img.shields.io/badge/Windows-supported-success.svg)]()
