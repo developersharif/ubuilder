@@ -405,6 +405,77 @@ for rt in "${REQUESTED[@]}"; do
     fi
 done
 
+# Python --exclude on a wheel: requirements.txt with two deps, build with
+# --exclude=six → filter strips the six line before pip runs, bundle runs
+# with attrs but fails to import six.
+run_python_exclude_case() {
+    local hermetic_dir
+    hermetic_dir="$(find "$RUNTIMES_CACHE/python" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    log ""
+    log "── python-with-exclude (--exclude=<wheel> filters requirements.txt) ──"
+    if [[ -z "$hermetic_dir" || ! -x "$hermetic_dir/bin/python3" ]]; then
+        warn "vendored Python missing; skipping"
+        return 0
+    fi
+
+    local fdir="$FIXTURE_DIR/python-with-exclude"
+    local cw="$WORK_DIR/python-with-exclude"
+    mkdir -p "$cw/build" "$cw/run"
+    info "fixture: $fdir (requirements: attrs+six; --exclude=six)"
+
+    rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/install-cache/python"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/build/app" \
+            --exclude=six \
+            >"$cw/build.log" 2>&1; then
+        fail "build failed"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    if ! grep -q "Filtered 1 line(s) from requirements via --exclude" "$cw/build.log"; then
+        fail "build log missing 'Filtered 1 line(s)' marker"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    if ! grep -q "six (excluded by config; not installed)" "$cw/build.log"; then
+        fail "build log missing per-package excluded notice"
+        return 1
+    fi
+    ok "build #1 filtered six from requirements before pip ran"
+
+    cp "$cw/build/app" "$cw/run/app"; chmod +x "$cw/run/app"
+    local fake_path; fake_path="$(mktemp -d)"
+    local exit_code=0
+    ( cd "$cw/run" && PATH="$fake_path" ./app "hello world" "it's" "ok" ) \
+        >"$cw/stdout.txt" 2>"$cw/stderr.txt" || exit_code=$?
+    rmdir "$fake_path"
+
+    local rc=0
+    if (( exit_code != 0 )); then
+        fail "exit $exit_code (expected 0)"
+        sed 's/^/    [stderr] /' "$cw/stderr.txt" | tail -n 10
+        rc=1
+    fi
+    if ! diff -u "$fdir/expected.txt" "$cw/stdout.txt" >"$cw/stdout.diff" 2>&1; then
+        fail "stdout differs"
+        sed 's/^/    /' "$cw/stdout.diff" | head -n 20
+        rc=1
+    fi
+    if (( rc == 0 )); then
+        ok "bundle imports attrs and proves six is absent at runtime"
+    fi
+    return $rc
+}
+
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "python" ]]; then
+        run_python_exclude_case || ((failures++))
+        break
+    fi
+done
+
 # M8-B (Node deps). Mirror of run_m8_deps_case but for Node + npm.
 # Build-time network required.
 run_m8b_deps_case() {
@@ -494,6 +565,87 @@ run_m8b_deps_case() {
 for rt in "${REQUESTED[@]}"; do
     if [[ "$rt" == "nodejs" ]]; then
         run_m8b_deps_case || ((failures++))
+        break
+    fi
+done
+
+# Node --exclude on a module: package.json with two deps, build with
+# --exclude=is-number → filter rewrites the staged package.json before
+# npm install runs; bundle uses picocolors but require("is-number") throws.
+run_nodejs_exclude_case() {
+    local hermetic_dir
+    hermetic_dir="$(find "$RUNTIMES_CACHE/node" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    log ""
+    log "── nodejs-with-exclude (--exclude=<module> filters package.json) ──"
+    if [[ -z "$hermetic_dir" || ! -x "$hermetic_dir/bin/node" ]]; then
+        warn "vendored Node missing; skipping"
+        return 0
+    fi
+
+    local fdir="$FIXTURE_DIR/nodejs-with-exclude"
+    local cw="$WORK_DIR/nodejs-with-exclude"
+    mkdir -p "$cw/build" "$cw/run"
+    info "fixture: $fdir (deps: picocolors+is-number; --exclude=is-number)"
+
+    rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/ubuilder/install-cache/nodejs"
+
+    if ! "$UBUILDER_BIN" \
+            --project-dir="$fdir" \
+            --output="$cw/build/app" \
+            --exclude=is-number \
+            >"$cw/build.log" 2>&1; then
+        fail "build failed"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    if ! grep -q "Filtered 1 dep(s) from staged package.json via --exclude" "$cw/build.log"; then
+        fail "build log missing 'Filtered 1 dep(s)' marker"
+        sed 's/^/    /' "$cw/build.log" | tail -n 20
+        return 1
+    fi
+    if ! grep -q "dependencies.is-number (excluded by config; not installed)" "$cw/build.log"; then
+        fail "build log missing per-dep excluded notice"
+        return 1
+    fi
+    local rc=0
+    # User's source package.json must be untouched (we only edit the stage).
+    # `pc_copy_or_link_tree` hardlinks when source/dest share a filesystem,
+    # so a naive in-place rewrite would clobber the user's file. This is
+    # the canary that catches that regression.
+    if [[ ! -f "$fdir/package.json" ]] || ! grep -q "is-number" "$fdir/package.json"; then
+        fail "user package.json was mutated by the build (staging promise broken)"
+        rc=1
+    fi
+    if (( rc == 0 )); then
+        ok "build filtered is-number out of staged package.json; source untouched"
+    fi
+
+    cp "$cw/build/app" "$cw/run/app"; chmod +x "$cw/run/app"
+    local fake_path; fake_path="$(mktemp -d)"
+    local exit_code=0
+    ( cd "$cw/run" && PATH="$fake_path" ./app "hello world" "it's" "ok" ) \
+        >"$cw/stdout.txt" 2>"$cw/stderr.txt" || exit_code=$?
+    rmdir "$fake_path"
+
+    if (( exit_code != 0 )); then
+        fail "exit $exit_code (expected 0)"
+        sed 's/^/    [stderr] /' "$cw/stderr.txt" | tail -n 10
+        rc=1
+    fi
+    if ! diff -u "$fdir/expected.txt" "$cw/stdout.txt" >"$cw/stdout.diff" 2>&1; then
+        fail "stdout differs"
+        sed 's/^/    /' "$cw/stdout.diff" | head -n 20
+        rc=1
+    fi
+    if (( rc == 0 )); then
+        ok "bundle requires picocolors and proves is-number is absent at runtime"
+    fi
+    return $rc
+}
+
+for rt in "${REQUESTED[@]}"; do
+    if [[ "$rt" == "nodejs" ]]; then
+        run_nodejs_exclude_case || ((failures++))
         break
     fi
 done

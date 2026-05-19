@@ -1,0 +1,4 @@
+ubuilder:node-exclude:hello
+argv:hello world,it's,ok
+picocolors-isColorSupported:true
+is-number-absent:true

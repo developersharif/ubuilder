@@ -1,0 +1,4 @@
+ubuilder:py-exclude:hello
+argv:hello world,it's,ok
+attrs:23.2.0
+six-absent:True

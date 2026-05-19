@@ -2,6 +2,7 @@
 #include "runtime_embedder.h"
 #include "../core/platform_compat.h"
 #include "../core/glob_match.h"
+#include "../core/json_mini.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -303,6 +304,171 @@ static const char* nodejs_path_basename(const char* path) {
     return p ? p + 1 : path;
 }
 
+/* Emit a JSON value tree to `fp` with 2-space indent. Internal to the
+ * package-json filter; not a general-purpose pretty-printer. */
+static void node_json_escape(FILE* fp, const char* s) {
+    fputc('"', fp);
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+        switch (*p) {
+            case '"':  fputs("\\\"", fp); break;
+            case '\\': fputs("\\\\", fp); break;
+            case '\n': fputs("\\n", fp);  break;
+            case '\r': fputs("\\r", fp);  break;
+            case '\t': fputs("\\t", fp);  break;
+            case '\b': fputs("\\b", fp);  break;
+            case '\f': fputs("\\f", fp);  break;
+            default:
+                if (*p < 0x20) fprintf(fp, "\\u%04x", *p);
+                else fputc(*p, fp);
+        }
+    }
+    fputc('"', fp);
+}
+
+static void node_emit_indent(FILE* fp, int depth) {
+    for (int i = 0; i < depth; i++) fputs("  ", fp);
+}
+
+static void node_emit_value(FILE* fp, const json_value_t* v, int depth);
+
+static void node_emit_value(FILE* fp, const json_value_t* v, int depth) {
+    if (!v) { fputs("null", fp); return; }
+    switch (v->type) {
+        case JSON_NULL:   fputs("null", fp); break;
+        case JSON_BOOL:   fputs(v->v.b ? "true" : "false", fp); break;
+        case JSON_NUMBER: fprintf(fp, "%ld", v->v.n); break;
+        case JSON_STRING: node_json_escape(fp, v->v.str.s); break;
+        case JSON_ARRAY:
+            if (v->v.arr.count == 0) { fputs("[]", fp); break; }
+            fputs("[\n", fp);
+            for (size_t i = 0; i < v->v.arr.count; i++) {
+                node_emit_indent(fp, depth + 1);
+                node_emit_value(fp, v->v.arr.items[i], depth + 1);
+                fputs(i + 1 < v->v.arr.count ? ",\n" : "\n", fp);
+            }
+            node_emit_indent(fp, depth);
+            fputc(']', fp);
+            break;
+        case JSON_OBJECT:
+            if (v->v.obj.count == 0) { fputs("{}", fp); break; }
+            fputs("{\n", fp);
+            for (size_t i = 0; i < v->v.obj.count; i++) {
+                node_emit_indent(fp, depth + 1);
+                node_json_escape(fp, v->v.obj.pairs[i].key);
+                fputs(": ", fp);
+                node_emit_value(fp, v->v.obj.pairs[i].value, depth + 1);
+                fputs(i + 1 < v->v.obj.count ? ",\n" : "\n", fp);
+            }
+            node_emit_indent(fp, depth);
+            fputc('}', fp);
+            break;
+    }
+}
+
+/* Drop keys from `obj` whose names match any exclude pattern. Returns the
+ * count of removed pairs. Mutates obj in place. */
+static size_t node_filter_obj_pairs(json_value_t* obj,
+                                    char* const* patterns, size_t n_patterns,
+                                    const char* section_label) {
+    if (!obj || obj->type != JSON_OBJECT) return 0;
+    size_t write = 0, removed = 0;
+    for (size_t i = 0; i < obj->v.obj.count; i++) {
+        const char* key = obj->v.obj.pairs[i].key;
+        int drop = 0;
+        for (size_t p = 0; p < n_patterns; p++) {
+            const char* pat = patterns[p];
+            if (!pat || !*pat) continue;
+            if (strncmp(pat, "ext-", 4) == 0) continue;
+            if (strchr(pat, '/') || strchr(pat, '\\')) continue;
+            if (strcmp(pat, key) == 0 || ub_glob_match(pat, key, 0)) {
+                drop = 1; break;
+            }
+        }
+        if (drop) {
+            printf("  - %s.%s (excluded by config; not installed)\n", section_label, key);
+            /* Leak the dropped pair's contents intentionally — json_free
+             * walks v.obj.count entries up to `write` after we update it,
+             * so dropped tails would otherwise be missed. Simpler: free
+             * key + value here, then collapse. */
+            free(obj->v.obj.pairs[i].key);
+            json_free(obj->v.obj.pairs[i].value);
+            removed++;
+            continue;
+        }
+        if (write != i) obj->v.obj.pairs[write] = obj->v.obj.pairs[i];
+        write++;
+    }
+    obj->v.obj.count = write;
+    return removed;
+}
+
+/* Parse `path`, drop matching deps from each dependency-style section,
+ * re-emit. Returns total removed; -1 on parse/IO error. */
+static int nodejs_filter_package_json(const char* path,
+                                      char* const* patterns, size_t n_patterns,
+                                      size_t* out_removed) {
+    *out_removed = 0;
+    FILE* in = fopen(path, "rb");
+    if (!in) return -1;
+    fseek(in, 0, SEEK_END);
+    long sz = ftell(in);
+    if (sz < 0 || sz > 16 * 1024 * 1024) { fclose(in); return -1; }
+    fseek(in, 0, SEEK_SET);
+    char* buf = (char*)malloc((size_t)sz + 1);
+    if (!buf) { fclose(in); return -1; }
+    if ((long)fread(buf, 1, (size_t)sz, in) != sz) { free(buf); fclose(in); return -1; }
+    buf[sz] = 0;
+    fclose(in);
+
+    char err[256];
+    json_value_t* root = json_parse(buf, (size_t)sz, err, sizeof(err));
+    free(buf);
+    if (!root || root->type != JSON_OBJECT) {
+        if (root) json_free(root);
+        fprintf(stderr, "Error: %s: not a JSON object\n", path);
+        return -1;
+    }
+
+    /* json_obj_get returns const — but we need to mutate. The struct has
+     * the pairs array directly accessible; locate by key and cast away
+     * const since we own the tree. */
+    const char* sections[] = {
+        "dependencies", "devDependencies",
+        "optionalDependencies", "peerDependencies"
+    };
+    size_t total = 0;
+    for (size_t s = 0; s < sizeof(sections)/sizeof(sections[0]); s++) {
+        for (size_t i = 0; i < root->v.obj.count; i++) {
+            if (strcmp(root->v.obj.pairs[i].key, sections[s]) == 0) {
+                total += node_filter_obj_pairs(root->v.obj.pairs[i].value,
+                                               patterns, n_patterns, sections[s]);
+                break;
+            }
+        }
+    }
+
+    if (total > 0) {
+        /* `path` is a hardlink-share with the user's source (because
+         * pc_copy_or_link_tree hardlinks when the dest is on the same FS).
+         * Unlink before rewriting so the staged copy gets a fresh inode
+         * and the source file stays pristine — keeping the staging
+         * promise the bundle tests assert. */
+        if (remove(path) != 0) {
+            fprintf(stderr, "Error: could not unlink staged %s before rewrite\n", path);
+            json_free(root);
+            return -1;
+        }
+        FILE* out = fopen(path, "wb");
+        if (!out) { json_free(root); return -1; }
+        node_emit_value(out, root, 0);
+        fputc('\n', out);
+        fclose(out);
+    }
+    json_free(root);
+    *out_removed = total;
+    return 0;
+}
+
 static ub_result_t nodejs_maybe_stage_project_with_deps(const ub_config_t* config,
                                                        char** out_staged) {
     *out_staged = NULL;
@@ -342,16 +508,38 @@ static ub_result_t nodejs_maybe_stage_project_with_deps(const ub_config_t* confi
         return UB_ERROR_EXTRACTION_FAILED;
     }
 
+    /* --exclude: rewrite the STAGED package.json (never the user's source)
+     * to drop matched deps. If anything changed, drop the staged lockfile
+     * too — `npm ci` would refuse on a lockfile/package-json mismatch and
+     * we'd rather fall through to `npm install`. */
+    char staged_pkg[1280], staged_lock[1280];
+    snprintf(staged_pkg,  sizeof(staged_pkg),  "%s/package.json",      stage);
+    snprintf(staged_lock, sizeof(staged_lock), "%s/package-lock.json", stage);
+    if (config && config->exclude_count > 0) {
+        size_t removed = 0;
+        if (nodejs_filter_package_json(staged_pkg, config->exclude,
+                                       config->exclude_count, &removed) == 0
+            && removed > 0) {
+            printf("Filtered %zu dep(s) from staged package.json via --exclude\n", removed);
+            if (have_lock) {
+                if (remove(staged_lock) == 0) {
+                    printf("  dropped staged package-lock.json (no longer in sync; npm install path)\n");
+                    have_lock = 0;
+                }
+            }
+        }
+    }
+
     /* M8-fast: install-cache lookup before invoking npm. Key inputs:
      *   - runtime id: basename of node_root (e.g. node-v24.15.0-linux-x64)
-     *   - manifest:   package.json
-     *   - lockfile:   package-lock.json (optional, but recommended for
-     *                 reproducibility — item #3)
+     *   - manifest:   STAGED package.json (so --exclude rewrites get a
+     *                 different cache key from a vanilla build).
+     *   - lockfile:   staged package-lock.json when still in sync.
      */
     char hex_key[65];
     int cache_ok = (ub_install_cache_key(nodejs_path_basename(node_root),
-                                         pkg_path,
-                                         have_lock ? lock_path : NULL,
+                                         staged_pkg,
+                                         have_lock ? staged_lock : NULL,
                                          hex_key) == 0);
     char staged_node_modules[1024];
     snprintf(staged_node_modules, sizeof(staged_node_modules), "%s/node_modules", stage);

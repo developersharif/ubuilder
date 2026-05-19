@@ -1,0 +1,9 @@
+{
+  "name": "nodejs-with-exclude-fixture",
+  "version": "0.0.1",
+  "private": true,
+  "dependencies": {
+    "picocolors": "1.1.1",
+    "is-number": "7.0.0"
+  }
+}

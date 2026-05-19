@@ -1,0 +1,5 @@
+{
+  "name": "python-with-exclude-fixture",
+  "runtime": "python",
+  "entry_point": "main.py"
+}

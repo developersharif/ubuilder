@@ -159,6 +159,102 @@ static const char* path_basename_ptr(const char* path) {
     return p ? p + 1 : path;
 }
 
+/* PEP-503 normalize: lowercase + '_'/'.' → '-'. In-place; caller-owned `s`. */
+static void python_pep503_normalize_inplace(char* s) {
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c >= 'A' && c <= 'Z') *s = (char)(c - 'A' + 'a');
+        else if (c == '_' || c == '.') *s = '-';
+    }
+}
+
+/* Extract the package name from one requirements.txt line into `out`
+ * (caller-provided, `cap` bytes). Returns 1 on success (name found),
+ * 0 on no-name (comment, blank, option, -r include, -e VCS). */
+static int python_req_line_name(const char* line, char* out, size_t cap) {
+    /* Skip leading whitespace. */
+    while (*line == ' ' || *line == '\t') line++;
+    if (!*line || *line == '#' || *line == '\n' || *line == '\r') return 0;
+    /* pip option lines: -r requirements-other.txt, -e ., --index-url, etc. */
+    if (*line == '-') return 0;
+
+    size_t i = 0;
+    for (; line[i] && i + 1 < cap; i++) {
+        char c = line[i];
+        /* Spec separators that terminate the bare package name. */
+        if (c == '=' || c == '<' || c == '>' || c == '!' ||
+            c == '~' || c == ';' || c == '[' || c == ' ' ||
+            c == '\t' || c == '\n' || c == '\r' || c == '#') break;
+    }
+    if (i == 0) return 0;
+    memcpy(out, line, i);
+    out[i] = 0;
+    python_pep503_normalize_inplace(out);
+    return 1;
+}
+
+/* Build a normalized exclude list (lowercased, PEP-503). Caller frees with
+ * free(*out) when *out_n > 0. Patterns matched by other categories (PHP
+ * ext-*, file globs with slashes) are dropped — they can't be Python pkg
+ * names. The returned list shares the heap (one alloc per entry). */
+static char** python_normalize_excludes(char* const* patterns, size_t n, size_t* out_n) {
+    *out_n = 0;
+    if (!patterns || n == 0) return NULL;
+    char** out = (char**)calloc(n, sizeof(char*));
+    if (!out) return NULL;
+    size_t w = 0;
+    for (size_t i = 0; i < n; i++) {
+        const char* p = patterns[i];
+        if (!p || !*p) continue;
+        if (strncmp(p, "ext-", 4) == 0) continue;  /* PHP-only */
+        if (strchr(p, '/') || strchr(p, '\\')) continue; /* file glob, not a pkg name */
+        char* dup = strdup(p);
+        if (!dup) continue;
+        python_pep503_normalize_inplace(dup);
+        out[w++] = dup;
+    }
+    if (w == 0) { free(out); return NULL; }
+    *out_n = w;
+    return out;
+}
+
+/* Filter `src_path` into `dst_path`, dropping any line whose package name
+ * matches one of the (already PEP-503-normalized) exclude entries.
+ * Comment / option / blank lines are preserved.
+ * On success returns 0 and sets *out_removed to the dropped line count.
+ * On read/write failure returns -1. */
+static int python_filter_requirements(const char* src_path, const char* dst_path,
+                                      char* const* norm_excl, size_t norm_n,
+                                      size_t* out_removed) {
+    *out_removed = 0;
+    FILE* in = fopen(src_path, "rb");
+    if (!in) return -1;
+    FILE* out = fopen(dst_path, "wb");
+    if (!out) { fclose(in); return -1; }
+
+    char  line[2048];
+    char  name[256];
+    while (fgets(line, sizeof(line), in)) {
+        int has_name = python_req_line_name(line, name, sizeof(name));
+        int drop = 0;
+        if (has_name && norm_excl) {
+            for (size_t i = 0; i < norm_n; i++) {
+                if (!norm_excl[i]) continue;
+                if (strcmp(norm_excl[i], name) == 0 ||
+                    ub_glob_match(norm_excl[i], name, 0)) { drop = 1; break; }
+            }
+        }
+        if (drop) {
+            printf("  - %s (excluded by config; not installed)\n", name);
+            (*out_removed)++;
+        } else {
+            fputs(line, out);
+        }
+    }
+    fclose(in); fclose(out);
+    return 0;
+}
+
 /* M8 + M8-fast: stage the cached runtime, materialize user deps into its
  * site-packages, return the staged path.
  *
@@ -199,7 +295,10 @@ static ub_result_t python_maybe_stage_with_deps(const ub_config_t* config,
     const char* lockfile_for_key  = have_lock ? lock_path : NULL;
 
     /* Build a staging path under the cache's parent so hardlinks work
-     * (same filesystem). $XDG_CACHE_HOME/ubuilder/stage/build-<pid>. */
+     * (same filesystem). $XDG_CACHE_HOME/ubuilder/stage/build-<pid>.
+     * NB: filtered_req lives ON THIS DIR so it's auto-cleaned with the stage. */
+    char filtered_req[1280];
+    filtered_req[0] = 0;
     const char* xdg = getenv("XDG_CACHE_HOME");
     const char* home = getenv("HOME");
     char stage[1024];
@@ -223,6 +322,35 @@ static ub_result_t python_maybe_stage_with_deps(const ub_config_t* config,
         fprintf(stderr, "Error: could not locate site-packages in %s\n", stage);
         pc_remove_tree(stage);
         return UB_ERROR_EXTRACTION_FAILED;
+    }
+
+    /* --exclude / config exclude → rewrite manifest to drop matched
+     * packages. The cache key reads the FILTERED manifest, so an exclude
+     * change invalidates cache correctly. Lockfile case: if any line was
+     * dropped we drop the lockfile from key/pip too, since it would now
+     * be out of sync (pip --no-deps + filtered lock isn't well-defined). */
+    if (config && config->exclude_count > 0) {
+        size_t  norm_n = 0;
+        char**  norm   = python_normalize_excludes(config->exclude,
+                                                   config->exclude_count, &norm_n);
+        if (norm && norm_n > 0) {
+            snprintf(filtered_req, sizeof(filtered_req),
+                     "%s/.ubuilder.filtered-requirements.txt", stage);
+            size_t removed = 0;
+            if (python_filter_requirements(manifest_for_pip, filtered_req,
+                                           norm, norm_n, &removed) == 0) {
+                if (removed > 0) {
+                    printf("Filtered %zu line(s) from requirements via --exclude\n", removed);
+                    manifest_for_pip = filtered_req;
+                    manifest_for_key = filtered_req;
+                    /* Lockfile no longer represents the install set. */
+                    lockfile_for_pip = NULL;
+                    lockfile_for_key = NULL;
+                }
+            }
+            for (size_t i = 0; i < norm_n; i++) free(norm[i]);
+            free(norm);
+        }
     }
 
     /* Cache key: runtime identity is the basename of the source runtime
