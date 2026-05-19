@@ -120,6 +120,15 @@ run_case() {
         return 0
     fi
 
+    # PHP M1-D synthesizes a runtime from the host's /usr/bin/php +
+    # extension_dir layout (Debian/RHEL/Arch style). Homebrew's Cellar
+    # layout on macOS isn't handled yet (documented limitation in
+    # CHANGELOG). Skip PHP cases on macOS until M1-D-macos lands.
+    if [[ "$rt" == "php" && "$(uname)" == "Darwin" ]]; then
+        warn "PHP bundle build is Linux-only in v2.x — Homebrew Cellar layout isn't yet supported; skipping"
+        return 0
+    fi
+
     mkdir -p "$case_work/build" "$run_dir"
 
     # 1. bundle — relies on ubuilder.json discovery for runtime + entry_point.
@@ -182,16 +191,28 @@ run_case() {
     if (( rc == 0 )); then
         local tamper_bin="$run_dir/app.tampered"
         cp "$run_dir/app" "$tamper_bin"
-        local file_size; file_size="$(stat -c %s "$tamper_bin")"
+        # `stat -c %s` is GNU; BSD/macOS uses `stat -f %z`. wc works on both.
+        local file_size; file_size="$(wc -c < "$tamper_bin" | tr -d ' ')"
         local mid=$(( file_size / 2 ))
         printf '\xAA' | dd of="$tamper_bin" bs=1 seek="$mid" count=1 conv=notrunc \
             >/dev/null 2>&1
         chmod +x "$tamper_bin"
         local tamper_exit=0
         ( "$tamper_bin" >/dev/null 2>"$case_work/tamper.stderr" ) || tamper_exit=$?
+        # On macOS the kernel/Gatekeeper rejects executables whose
+        # ad-hoc signature no longer matches the contents — typical exit
+        # is 126 (cannot execute), 137 (SIGKILL via taskgated), or
+        # variants. The tamper is still "caught"; our own integrity check
+        # just doesn't get a chance to print because the binary never
+        # starts. Accept any non-zero exit as success on Darwin; require
+        # the explicit 'integrity check FAILED' marker only elsewhere.
+        local on_macos=0
+        [[ "$(uname)" == "Darwin" ]] && on_macos=1
         if (( tamper_exit == 0 )); then
             fail "tampered bundle ran successfully — integrity check did not fire"
             rc=1
+        elif (( on_macos )); then
+            ok "tampered bundle correctly refused to run (exit $tamper_exit; OS-level signature check on macOS)"
         elif ! grep -q 'integrity check FAILED' "$case_work/tamper.stderr"; then
             fail "tampered bundle exited $tamper_exit but stderr lacks 'integrity check FAILED'"
             sed 's/^/    [stderr] /' "$case_work/tamper.stderr" | tail -n 10
@@ -743,7 +764,7 @@ run_m1d_php_deps_case() {
 }
 
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "php" ]]; then
+    if [[ "$rt" == "php" && "$(uname)" != "Darwin" ]]; then
         run_m1d_php_deps_case || ((failures++))
         break
     fi
@@ -805,7 +826,7 @@ run_m1d_php_missing_ext_case() {
 }
 
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "php" ]]; then
+    if [[ "$rt" == "php" && "$(uname)" != "Darwin" ]]; then
         run_m1d_php_missing_ext_case || ((failures++))
         break
     fi
@@ -854,7 +875,7 @@ run_m1d_php_exclude_ext_case() {
 }
 
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "php" ]]; then
+    if [[ "$rt" == "php" && "$(uname)" != "Darwin" ]]; then
         run_m1d_php_exclude_ext_case || ((failures++))
         break
     fi
@@ -938,7 +959,7 @@ run_m1d_php_autoconfig_case() {
 }
 
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "php" ]]; then
+    if [[ "$rt" == "php" && "$(uname)" != "Darwin" ]]; then
         run_m1d_php_autoconfig_case || ((failures++))
         break
     fi
