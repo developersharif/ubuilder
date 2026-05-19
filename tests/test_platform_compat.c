@@ -105,11 +105,16 @@ static void test_spawn_basic(void) {
     char* argv_true[]  = { (char*)"true",  NULL };
     char* argv_false[] = { (char*)"false", NULL };
 
-    int t = pc_spawn_and_wait("/bin/true",  argv_true,  NULL, NULL);
-    int f = pc_spawn_and_wait("/bin/false", argv_false, NULL, NULL);
+    /* /usr/bin/true and /usr/bin/false exist on every Unix we care about:
+     *   - Linux: real binary (and /bin/true is usually a symlink to it).
+     *   - macOS 12+: real binary; /bin/true was removed from /bin in
+     *     Sequoia (15.x), so the older /bin/true path fails on the
+     *     macos-15-arm64 GitHub runner. /usr/bin/true works everywhere. */
+    int t = pc_spawn_and_wait("/usr/bin/true",  argv_true,  NULL, NULL);
+    int f = pc_spawn_and_wait("/usr/bin/false", argv_false, NULL, NULL);
 
-    EXPECT("spawn: /bin/true exits 0",  t == 0);
-    EXPECT("spawn: /bin/false exits 1", f == 1);
+    EXPECT("spawn: /usr/bin/true exits 0",  t == 0);
+    EXPECT("spawn: /usr/bin/false exits 1", f == 1);
 }
 
 static void test_spawn_missing(void) {
@@ -163,7 +168,7 @@ static void test_path_lookup(void) {
     free(p);
 
     /* Absolute path that exists. */
-    p = pc_path_lookup("/bin/true");
+    p = pc_path_lookup("/usr/bin/true");
     EXPECT("path_lookup: accepts absolute path that exists", p != NULL);
     free(p);
 
