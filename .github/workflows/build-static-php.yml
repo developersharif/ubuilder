@@ -144,7 +144,12 @@ jobs:
         run: |
           set -euo pipefail
           PHP_FULL_VER=$(./spc-work/buildroot/bin/php -r 'echo PHP_VERSION;')
-          ASSET="ubuilder-static-php-${PHP_FULL_VER}-${{ matrix.target }}.tar.gz"
+          PHP_MINOR="${{ steps.inputs.outputs.php_version }}"  # e.g. 8.4
+          # Stable asset name (no patch version) so the ubuilder client
+          # can construct download URLs from --php-version=8.4 directly.
+          # The full PHP version is recorded in the release body for
+          # traceability; we overwrite on rebuild within the same minor.
+          ASSET="ubuilder-static-php-${PHP_MINOR}-${{ matrix.target }}.tar.gz"
           tar -C spc-work/buildroot/bin -czf "$ASSET" php
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
           echo "asset=$ASSET"           >> "$GITHUB_OUTPUT"
