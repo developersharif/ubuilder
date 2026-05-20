@@ -69,33 +69,47 @@ for i in $(seq 1 50); do
     [[ -n "$EXTRACT" && -d "$EXTRACT/runtime/bin" ]] && break
 done
 echo "[port-check] EXTRACT=${EXTRACT:-(not found)}"
-# Wait for extraction to stabilize: poll until the total file count
-# stops growing for two consecutive 200ms ticks. Bundles with FFI-loaded
-# user dylibs (php-gui Tcl/Tk, etc.) finish extracting just before the
-# child interpreter starts, and snapshotting too early misses them.
-prev=0
-stable=0
-for i in $(seq 1 30); do
-    sleep 0.2
-    cur="$(find "$EXTRACT" -type f 2>/dev/null | wc -l | tr -d ' ')"
-    if [[ "$cur" == "$prev" && "$cur" -gt 0 ]]; then
-        stable=$((stable + 1))
-        (( stable >= 2 )) && break
-    else
-        stable=0
-        prev="$cur"
+
+# Wait for extraction to actually finish before SIGSTOP'ing. The launcher
+# extracts the whole runtime tree (bin/php, lib/*.dylib, ext/, app/) into
+# $EXTRACT THEN spawns the child interpreter. So the moment the launcher
+# has a child process, extraction is complete. We poll for that — it's
+# the only signal that fires AFTER extraction but BEFORE the child can
+# finish and trigger the launcher's atexit cleanup.
+extraction_done=0
+for i in $(seq 1 50); do
+    if pgrep -P "$PID" >/dev/null 2>&1; then
+        extraction_done=1
+        break
     fi
+    # Bundle might have already finished + cleaned up (very fast CLI).
+    # If the extract dir is gone, give up on the "wait for child" path
+    # and just snapshot what we have (likely nothing).
+    [[ ! -d "$EXTRACT" ]] && break
+    sleep 0.05
 done
+echo "[port-check] extraction_done=$extraction_done"
+
+# Freeze the launcher AND its child so neither can clean up while we
+# snapshot. SIGSTOP is honored regardless of signal handlers, so this
+# is racy-safe even against a launcher that traps SIGTERM.
+kill -STOP "$PID" 2>/dev/null || true
+pgrep -P "$PID" 2>/dev/null | xargs kill -STOP 2>/dev/null || true
 
 # Mirror the entire extracted tree (runtime/ + app files like vendor/)
 # before the bundle deletes it. The launcher chdir()s into the extract
 # dir, so any dylibs loaded by the app via FFI (e.g. php-gui's Tcl/Tk)
 # live at the bundle root, not under runtime/.
+file_count=0
 if [[ -n "$EXTRACT" && -d "$EXTRACT" ]]; then
     cp -R "$EXTRACT" "$WORK/extracted"
+    file_count="$(find "$WORK/extracted" -type f 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
 fi
+echo "[port-check] snapshotted $file_count file(s)"
 
-# Stop the bundle (cli may have already exited; gui needs SIGTERM)
+# Now resume + terminate the bundle.
+kill -CONT "$PID" 2>/dev/null || true
+pgrep -P "$PID" 2>/dev/null | xargs kill -CONT 2>/dev/null || true
 kill -TERM "$PID" 2>/dev/null || true
 pkill -P "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
