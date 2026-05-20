@@ -516,6 +516,39 @@ static int php_write_default_ini(const char* ini_path,
  * the PHP/ext-* set we care about.
  * ============================================================ */
 
+#include <spawn.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+extern char** environ;
+
+/* Spawn install_name_tool (or any tool) with stderr redirected to
+ * /dev/null. install_name_tool emits "changes being made to the file
+ * will invalidate the code signature in: …" for every Mach-O it
+ * touches — but we always `codesign --force` immediately afterwards,
+ * which makes the warning misleading noise. Suppressing stderr keeps
+ * the build log focused on what actually matters. Returns exit status
+ * (>= 0) on success, -1 on spawn failure. */
+static int mac_spawn_quiet_stderr(char* const argv[]) {
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) return -1;
+    if (posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
+                                         "/dev/null", O_WRONLY, 0) != 0) {
+        posix_spawn_file_actions_destroy(&actions);
+        return -1;
+    }
+    pid_t pid = 0;
+    int rc = posix_spawnp(&pid, argv[0], &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (rc != 0) { errno = rc; return -1; }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    if (WIFEXITED(status))   return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+}
+
 /* Minimal growable string list, used as both a queue and a "seen" set. */
 typedef struct {
     char** items;
@@ -837,49 +870,98 @@ static int mac_rewrite_to_bundle(const char* mach_o, int set_id_to_self, int ver
     /* Make the file writable in case it came from a read-only hardlink source. */
     chmod(mach_o, 0755);
 
-    int rc = 0;
     const char* mach_o_base = strrchr(mach_o, '/');
     mach_o_base = mach_o_base ? mach_o_base + 1 : mach_o;
 
+    /* Batch every -change pair (and the optional -id) into a single
+     * install_name_tool invocation per file. Without this, each pair
+     * is a separate process and each emits its own "will invalidate
+     * the code signature" warning — for ~50 dylibs with ~10 deps each,
+     * that's 500+ warning lines. Batching cuts it to one call per file,
+     * and `mac_spawn_quiet_stderr` discards the (still-emitted) single
+     * warning since we always codesign --force right after. */
+    char new_id[1024];
+    new_id[0] = 0;
     if (set_id_to_self) {
-        char new_id[1024];
         snprintf(new_id, sizeof(new_id), "@executable_path/../lib/%s", mach_o_base);
-        char* argv[] = { int_tool, (char*)"-id", new_id, (char*)mach_o, NULL };
-        if (pc_spawn_and_wait(int_tool, argv, NULL, NULL) != 0) {
-            if (verbose) fprintf(stderr, "  warn: install_name_tool -id failed on %s\n", mach_o);
-        }
     }
 
+    /* First pass: count eligible -change pairs so we can size argv. */
+    size_t n_changes = 0;
     for (size_t i = 0; i < deps.count; i++) {
         const char* dep = deps.items[i];
-        /* Rewrite both absolute non-system refs AND @rpath/X refs. The
-         * latter would otherwise be resolved at runtime against the
-         * binary's LC_RPATH list (still pointing at Homebrew paths),
-         * which doesn't exist on a fresh Mac. By rewriting in advance,
-         * the bundle is rpath-independent. */
         if (dep[0] == '@' && strncmp(dep, "@rpath/", 7) != 0) continue;
         if (dep[0] != '@' && mac_is_system_dylib(dep)) continue;
-
         const char* base = strrchr(dep, '/');
         base = base ? base + 1 : dep;
+        if (set_id_to_self && strcmp(base, mach_o_base) == 0) continue;
+        n_changes++;
+    }
 
-        /* When set_id_to_self is true and this dep is the dylib's own
-         * LC_ID_DYLIB line, skip — we already handled the id above and
-         * install_name_tool -change won't match LC_ID_DYLIB anyway. */
+    if (n_changes == 0 && !set_id_to_self) {
+        mac_strs_free(&deps);
+        free(int_tool);
+        return 0;
+    }
+
+    /* Build argv:
+     *   [int_tool, "-id", new_id,            // when set_id_to_self
+     *    "-change", OLD1, NEW1,
+     *    "-change", OLD2, NEW2, ...,
+     *    mach_o, NULL] */
+    size_t argc_total = 1                                /* int_tool */
+                      + (set_id_to_self ? 2 : 0)         /* -id NEW_ID */
+                      + n_changes * 3                    /* -change OLD NEW */
+                      + 1                                /* mach_o */
+                      + 1;                               /* NULL */
+    char** argv      = (char**)calloc(argc_total, sizeof(char*));
+    /* `new_ref` strings are heap-allocated and outlive the loop. */
+    char** to_free   = (char**)calloc(n_changes + 1, sizeof(char*));
+    if (!argv || !to_free) {
+        free(argv); free(to_free);
+        mac_strs_free(&deps); free(int_tool);
+        return -1;
+    }
+
+    size_t a = 0, tf = 0;
+    argv[a++] = int_tool;
+    if (set_id_to_self) {
+        argv[a++] = (char*)"-id";
+        argv[a++] = new_id;
+    }
+    for (size_t i = 0; i < deps.count; i++) {
+        const char* dep = deps.items[i];
+        if (dep[0] == '@' && strncmp(dep, "@rpath/", 7) != 0) continue;
+        if (dep[0] != '@' && mac_is_system_dylib(dep)) continue;
+        const char* base = strrchr(dep, '/');
+        base = base ? base + 1 : dep;
         if (set_id_to_self && strcmp(base, mach_o_base) == 0) continue;
 
         char new_ref[1024];
         snprintf(new_ref, sizeof(new_ref), "@executable_path/../lib/%s", base);
+        char* nr_dup = strdup(new_ref);
+        if (!nr_dup) continue;
+        to_free[tf++] = nr_dup;
 
-        char* argv[] = { int_tool, (char*)"-change", (char*)dep, new_ref, (char*)mach_o, NULL };
-        if (pc_spawn_and_wait(int_tool, argv, NULL, NULL) != 0) {
-            if (verbose) fprintf(stderr, "  warn: install_name_tool -change %s on %s failed\n", dep, mach_o);
-            /* Non-fatal — continue with remaining deps. */
-        }
+        argv[a++] = (char*)"-change";
+        argv[a++] = (char*)dep;
+        argv[a++] = nr_dup;
     }
+    argv[a++] = (char*)mach_o;
+    argv[a]   = NULL;
+
+    int rc = mac_spawn_quiet_stderr(argv);
+    if (rc != 0 && verbose) {
+        fprintf(stderr, "  warn: install_name_tool failed on %s (rc=%d)\n", mach_o, rc);
+        /* Non-fatal — codesign will fail later if the binary is broken. */
+    }
+
+    for (size_t i = 0; i < tf; i++) free(to_free[i]);
+    free(to_free);
+    free(argv);
     mac_strs_free(&deps);
     free(int_tool);
-    return rc;
+    return rc == 0 ? 0 : -1;
 }
 
 /* Ad-hoc re-sign a Mach-O after install_name_tool modified it. Required
@@ -893,7 +975,10 @@ static int mac_codesign_adhoc(const char* mach_o, int verbose) {
         return 0;  /* Best-effort: don't fail the build on x86_64 hosts that may not have it. */
     }
     char* argv[] = { cs, (char*)"--force", (char*)"--sign", (char*)"-", (char*)mach_o, NULL };
-    int rc = pc_spawn_and_wait(cs, argv, NULL, NULL);
+    /* codesign prints "<path>: replacing existing signature" to stderr
+     * for every file — informative but spammy across ~50 dylibs. Discard
+     * stderr; a non-zero rc still surfaces a clear warning below. */
+    int rc = mac_spawn_quiet_stderr(argv);
     if (rc != 0 && verbose) fprintf(stderr, "  warn: codesign --sign - failed on %s (rc=%d)\n", mach_o, rc);
     free(cs);
     return 0;  /* Always best-effort — we don't want to fail builds on a signing edge case. */
