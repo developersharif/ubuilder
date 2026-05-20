@@ -866,6 +866,13 @@ run_m1d_php_exclude_ext_case() {
     log ""
     log "── php-exclude-ext (--exclude=ext-X drops composer-declared ext) ──"
     if ! command -v php >/dev/null; then warn "host php missing; skipping"; return 0; fi
+    # The signal we assert below ("passing --ignore-platform-req=…") is only
+    # printed inside the composer-install code path. When composer is not on
+    # PATH (the macos-latest GH runner stopped shipping it), ubuilder takes
+    # the "bundling project as-is" branch and never spawns composer, so the
+    # flag never appears even when the exclude is wired correctly. Skip
+    # rather than report a misleading failure.
+    if ! command -v composer >/dev/null; then warn "composer not on PATH; skipping (install from https://getcomposer.org/)"; return 0; fi
 
     local fdir="$FIXTURE_DIR/php-missing-ext"
     local cw="$WORK_DIR/php-exclude-ext"

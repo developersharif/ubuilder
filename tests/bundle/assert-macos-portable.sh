@@ -52,9 +52,17 @@ LOG="$WORK/run.log"
 "$BUNDLE" >"$LOG" 2>&1 &
 PID=$!
 EXTRACT=""
+# Search wherever mkdtemp may have placed the launcher's extract dir.
+# - $TMPDIR honored on macOS, GH Actions sets a runner-specific path.
+# - /var/folders/*/*/T/ is the default user temp on macOS (M-series + Intel).
+# - /tmp is the POSIX fallback the launcher uses when neither of the above
+#   are usable.
 for i in $(seq 1 50); do
     sleep 0.1
-    EXTRACT="$(ls -dt /var/folders/*/*/T/ubuilder-${PID} 2>/dev/null | head -1 || true)"
+    EXTRACT="$(ls -dt "${TMPDIR%/}/ubuilder-${PID}" \
+                       /var/folders/*/*/T/ubuilder-${PID} \
+                       /tmp/ubuilder-${PID} \
+                       2>/dev/null | head -1 || true)"
     [[ -n "$EXTRACT" && -d "$EXTRACT/runtime/bin" ]] && break
 done
 # Wait for extraction to stabilize: poll until the total file count
@@ -90,6 +98,12 @@ wait "$PID" 2>/dev/null || true
 
 if [[ ! -d "$WORK/extracted" ]]; then
     echo "error: could not snapshot extracted tree" >&2
+    echo "  PID:     $PID" >&2
+    echo "  TMPDIR:  ${TMPDIR:-(unset)}" >&2
+    echo "  EXTRACT: ${EXTRACT:-(empty)}" >&2
+    echo "  --- candidate temp dirs explored ---" >&2
+    ls -la "${TMPDIR%/}/" /var/folders/*/*/T/ /tmp/ 2>/dev/null | grep -E "ubuilder|^total" | head -20 >&2 || true
+    echo "  --- bundle stdout/stderr ---" >&2
     cat "$LOG" >&2 || true
     exit 1
 fi
