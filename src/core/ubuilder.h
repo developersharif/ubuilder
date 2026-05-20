@@ -88,6 +88,11 @@ typedef struct {
      * spawn vendor-runtimes.sh" path. Useful in CI where the cache is
      * pre-populated and we want to fail loudly on a miss. */
     int   no_auto_vendor;
+    /* Windows only: when 0 (default), the output .exe runs without a visible
+     * console window (PE subsystem is patched to IMAGE_SUBSYSTEM_WINDOWS_GUI).
+     * Set to 1 ("console": true in ubuilder.json) to keep the console —
+     * useful for CLI tools or debugging. On non-Windows this field is ignored. */
+    int   console_window;
     /* Glob patterns and/or `ext-<name>` tokens to omit from the bundle.
      * Applied in two places:
      *   - app file recursion (every runtime): paths matching any pattern

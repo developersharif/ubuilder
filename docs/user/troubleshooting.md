@@ -269,6 +269,36 @@ codesign -s "Developer ID Application" your-app
 # cmake -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ..
 ```
 
+**Issue: console window flashes briefly then disappears**
+
+By default, ubuilder patches the output `.exe` to run as a Windows GUI subsystem app (no console window). If your app is a CLI tool that prints output, add `"console": true` to your `ubuilder.json`:
+
+```json
+{ "runtime": "node", "entry_point": "main.js", "console": true }
+```
+
+**Issue: Python runtime not found on Windows**
+
+Windows users who installed Python via the Microsoft Store may have a stub
+(`C:\Users\<name>\AppData\Local\Microsoft\WindowsApps\python.exe`) on PATH
+that causes auto-detection to fail. Point ubuilder at your real installation:
+
+```json
+{
+  "runtime": "python",
+  "entry_point": "main.py",
+  "runtime_options": {
+    "python": { "source": "C:\\Users\\YourName\\AppData\\Local\\Programs\\Python\\Python311" }
+  }
+}
+```
+
+Or pass it on the CLI:
+
+```powershell
+ubuilder --runtime-source="C:\Users\YourName\AppData\Local\Programs\Python\Python311"
+```
+
 ## 🔍 Debugging Techniques
 
 ### Verbose Output Analysis

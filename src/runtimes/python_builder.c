@@ -470,13 +470,44 @@ static ub_result_t python_embed_runtime(const ub_config_t* config, FILE* output_
     }
 #endif
 
+#ifdef PLATFORM_WINDOWS
+    /* Windows: honor runtime_source before falling back to host probe.
+     * If it's a directory, use it directly as the Python install tree.
+     * If it's a file (e.g. python.exe), strip the filename to get the dir. */
+    if (config && config->runtime_source) {
+        struct stat rs;
+        if (stat(config->runtime_source, &rs) != 0) {
+            fprintf(stderr, "Error: --runtime-source not found: %s\n", config->runtime_source);
+            return UB_ERROR_FILE_NOT_FOUND;
+        }
+        char python_dir[1024];
+        if (S_ISDIR(rs.st_mode)) {
+            strncpy(python_dir, config->runtime_source, sizeof(python_dir) - 1);
+            python_dir[sizeof(python_dir) - 1] = '\0';
+        } else {
+            strncpy(python_dir, config->runtime_source, sizeof(python_dir) - 1);
+            python_dir[sizeof(python_dir) - 1] = '\0';
+            char* last = strrchr(python_dir, '\\');
+            if (!last) last = strrchr(python_dir, '/');
+            if (!last) {
+                fprintf(stderr, "Error: --runtime-source must be a file or directory\n");
+                return UB_ERROR_INVALID_ARGS;
+            }
+            *last = '\0';
+        }
+        printf("Embedding Windows Python runtime from: %s\n", python_dir);
+        return python_embed_windows_runtime(python_dir, output_file);
+    }
+#endif
+
     /* Fall back to host probe. */
     ub_runtime_info_t runtime_info;
     result = ub_detect_runtime_binary(UB_RUNTIME_PYTHON, &runtime_info);
     if (result != UB_SUCCESS) {
         fprintf(stderr, "Error: Python runtime not found on system.\n"
-                        "  Hint: run `scripts/vendor-runtimes.sh python` to vendor a\n"
-                        "        hermetic Python, then pass --runtime-source=<cache-dir>.\n");
+                        "  Hint: pass --runtime-source=<python-install-dir> or\n"
+                        "        run `scripts/vendor-runtimes.sh python` to vendor a\n"
+                        "        hermetic Python.\n");
         return result;
     }
 

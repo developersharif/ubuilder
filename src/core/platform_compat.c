@@ -177,11 +177,24 @@ int pc_spawn_and_wait(const char* exe,
     si.cb = sizeof(si);
     memset(&pi, 0, sizeof(pi));
 
+    /* When the parent process has no console (i.e. it was built with the
+     * WINDOWS/GUI subsystem — a bundled GUI app like a PHP/Tk window), child
+     * CUI processes (php.exe, node.exe, python.exe) would otherwise flash a
+     * new console window on screen.  Detect this with GetConsoleWindow(): if
+     * it returns NULL we have no attached console and must suppress the child's
+     * window with CREATE_NO_WINDOW.  When the parent does have a console (the
+     * developer running ubuilder from cmd/PowerShell) we leave flags at 0 so
+     * the child inherits the session normally. */
+    DWORD creation_flags = 0;
+    if (GetConsoleWindow() == NULL) {
+        creation_flags |= CREATE_NO_WINDOW;
+    }
+
     BOOL ok = CreateProcessA(
         exe,                /* lpApplicationName */
         cmd,                /* lpCommandLine */
         NULL, NULL, FALSE,
-        0,
+        creation_flags,
         env_block,
         cwd,
         &si, &pi);

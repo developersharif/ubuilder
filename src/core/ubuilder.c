@@ -486,7 +486,12 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime,
      * PHP slot accounting:
      *   exe + "-c" + ini + "-d" + extension_dir=... + script + NULL = 6 extra
      */
+    /* Windows PHP needs two extra -d slots: extension_dir=... and ffi.enable=true */
+#ifdef PLATFORM_WINDOWS
+    int    extra = (runtime == UB_RUNTIME_PHP) ? 8 : 2;
+#else
     int    extra = (runtime == UB_RUNTIME_PHP) ? 6 : 2;
+#endif
     int    user  = (argc > 1) ? (argc - 1) : 0;
     char** spawn_argv = (char**)calloc((size_t)(extra + user + 1), sizeof(char*));
     if (!spawn_argv) return -1;
@@ -504,29 +509,33 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime,
         spawn_argv[ai++] = (char*)"-c";
         spawn_argv[ai++] = php_ini_path;
 
-        /* M1-D: synthetic-tree layout puts extensions at <tree-root>/ext.
-         * runtime_dir here is <tree-root>/bin (parent of bin/php). Resolve
-         * the sibling ext/ dir and pass it as -d extension_dir=<abspath>
-         * so the extension= lines in php.ini resolve correctly. */
+        /* Point PHP at the bundled extensions.
+         *
+         * Windows flat layout: php.exe and ext\ live directly in runtime_dir
+         * (e.g. C:\Temp\ubuilder-12345\).  Use runtime_dir as-is.
+         *
+         * POSIX tree layout: php binary is at <tree>/bin/php, extensions at
+         * <tree>/ext.  runtime_dir is <tree>/bin — strip one level. */
+#ifdef PLATFORM_WINDOWS
+        snprintf(php_ext_dir_arg, sizeof(php_ext_dir_arg),
+                 "extension_dir=%s\\ext", runtime_dir);
+        spawn_argv[ai++] = (char*)"-d";
+        spawn_argv[ai++] = php_ext_dir_arg;
+        /* php-gui requires FFI; the embedded php.ini may not enable it. */
+        spawn_argv[ai++] = (char*)"-d";
+        spawn_argv[ai++] = (char*)"ffi.enable=true";
+#else
         char tree_root[1024];
         if (strlen(runtime_dir) < sizeof(tree_root)) {
             strcpy(tree_root, runtime_dir);
-#ifdef PLATFORM_WINDOWS
-            char* tr_slash = strrchr(tree_root, '\\');
-#else
             char* tr_slash = strrchr(tree_root, '/');
-#endif
             if (tr_slash) *tr_slash = '\0';
-#ifdef PLATFORM_WINDOWS
-            snprintf(php_ext_dir_arg, sizeof(php_ext_dir_arg),
-                     "extension_dir=%s\\ext", tree_root);
-#else
             snprintf(php_ext_dir_arg, sizeof(php_ext_dir_arg),
                      "extension_dir=%s/ext", tree_root);
-#endif
             spawn_argv[ai++] = (char*)"-d";
             spawn_argv[ai++] = php_ext_dir_arg;
         }
+#endif
     }
     spawn_argv[ai++] = script_name;
     for (int i = 1; i < argc; i++) spawn_argv[ai++] = argv[i];
@@ -558,8 +567,9 @@ static int ub_execute_script_with_embedded_runtime(ub_runtime_type_t runtime,
          * order. runtime_dir here is <tree>/bin. */
         static char php_scan_env[2200];
 #ifdef PLATFORM_WINDOWS
-        snprintf(php_scan_env, sizeof(php_scan_env),
-                 "PHP_INI_SCAN_DIR=%s\\conf.d", runtime_dir);
+        /* Windows flat layout has no conf.d; clear the scan dir so PHP
+         * doesn't warn about a missing directory or load host fragments. */
+        snprintf(php_scan_env, sizeof(php_scan_env), "PHP_INI_SCAN_DIR=");
 #else
         snprintf(php_scan_env, sizeof(php_scan_env),
                  "PHP_INI_SCAN_DIR=%s/conf.d", runtime_dir);
@@ -686,6 +696,41 @@ static ub_result_t copy_executable_template(const char* output_path) {
  * removed the *reader* for. They were never wired to a caller in modular
  * V3/V4 builds (the per-builder `embed_application` does this work today). */
 
+#ifdef PLATFORM_WINDOWS
+/* Patch the PE subsystem field in the output executable.
+ *
+ * ubuilder.exe is a CUI (console) application.  When bundled as a GUI app
+ * (e.g. a PHP/Tk file manager) the copy should NOT open a console window on
+ * double-click.  Flipping the subsystem word from IMAGE_SUBSYSTEM_WINDOWS_CUI
+ * (3) to IMAGE_SUBSYSTEM_WINDOWS_GUI (2) achieves this without relinking.
+ *
+ * PE layout: DOS header → e_lfanew (offset 60) → PE sig (4) → COFF hdr (20)
+ * → Optional Header.  The Subsystem word is at offset 68 inside the Optional
+ * Header for both PE32 and PE32+, so the absolute file offset is always
+ * e_lfanew + 92. */
+static void patch_pe_subsystem(const char* path, int subsystem) {
+    FILE* f = fopen(path, "r+b");
+    if (!f) return;
+
+    uint16_t dos_magic = 0;
+    if (fread(&dos_magic, 2, 1, f) != 1 || dos_magic != 0x5A4D) { fclose(f); return; }
+
+    if (fseek(f, 60, SEEK_SET) != 0) { fclose(f); return; }
+    uint32_t pe_off = 0;
+    if (fread(&pe_off, 4, 1, f) != 1) { fclose(f); return; }
+
+    if (fseek(f, pe_off, SEEK_SET) != 0) { fclose(f); return; }
+    uint32_t pe_sig = 0;
+    if (fread(&pe_sig, 4, 1, f) != 1 || pe_sig != 0x00004550) { fclose(f); return; }
+
+    /* pe_off + 4 (sig) + 20 (COFF) + 68 (subsystem offset in Optional Hdr) */
+    if (fseek(f, (long)(pe_off + 92), SEEK_SET) != 0) { fclose(f); return; }
+    uint16_t sub = (uint16_t)subsystem;
+    fwrite(&sub, 2, 1, f);
+    fclose(f);
+}
+#endif
+
 // Main function to create modular runtime-specific executable (Phase 3)
 static ub_result_t create_modular_executable(const ub_config_t* config) {
     ub_runtime_builder_t* builder;
@@ -717,6 +762,16 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
     // wrapper on top.
     result = copy_executable_template(config->output_path);
     if (result != UB_SUCCESS) return result;
+
+#ifdef PLATFORM_WINDOWS
+    /* Suppress the console window unless the user opted in with "console":true.
+     * ubuilder.exe is a CUI binary; patch the copy to GUI subsystem so
+     * double-clicking a GUI app (php-gui, tkinter, etc.) doesn't open a
+     * terminal.  A CLI tool can set "console":true to restore it. */
+    if (!config->console_window) {
+        patch_pe_subsystem(config->output_path, 2 /* IMAGE_SUBSYSTEM_WINDOWS_GUI */);
+    }
+#endif
     
     // 2. Open output file for appending runtime-specific data
     FILE* output_file = fopen(config->output_path, "ab");
@@ -724,10 +779,19 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
         fprintf(stderr, "Error: Failed to open output file for writing\n");
         return UB_ERROR_EXTRACTION_FAILED;
     }
-    
-    // Get the current file size to know where embedded data starts
+
+    /* Get the current file size = where embedded data will start.
+     * On Windows/MSVC, ftell() on an "ab" FILE* is unreliable — the C
+     * standard leaves the position indicator unspecified for append mode
+     * and MSVC does not update it after fseek(SEEK_END).  _filelength()
+     * queries the underlying OS handle directly and is always correct.
+     * On POSIX, fseek(SEEK_END)+ftell() is well-defined. */
+#ifdef PLATFORM_WINDOWS
+    long data_start_offset = _filelength(_fileno(output_file));
+#else
     fseek(output_file, 0, SEEK_END);
     long data_start_offset = ftell(output_file);
+#endif
     
     // 3. Embed runtime-specific runtime
     result = builder->embed_runtime(config, output_file);
@@ -756,14 +820,27 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
     /* 6. Compute SHA-256 over the payload [data_start_offset, payload_end).
      * Per the Apple-sandbox principle: integrity at every boundary. The
      * hash is verified before extraction at launch time; any tamper or
-     * truncation refuses to run instead of best-efforting through it. */
+     * truncation refuses to run instead of best-efforting through it.
+     *
+     * Same ftell-in-append-mode caveat as data_start_offset above.
+     * On Windows/MSVC, _filelength() calls _lseek(SEEK_CUR) internally which
+     * fails with EINVAL after writes to an "ab" FILE* (append-mode files
+     * don't support seeking once written). Use GetFileSizeEx() on the raw
+     * HANDLE instead — it never seeks, just queries the FS metadata.
+     * fflush() first so the C-runtime buffer is committed to the OS. */
+#ifdef PLATFORM_WINDOWS
+    fflush(output_file);
+    LARGE_INTEGER liSize;
+    GetFileSizeEx((HANDLE)_get_osfhandle(_fileno(output_file)), &liSize);
+    long payload_end = (long)liSize.QuadPart;
+#else
     long payload_end = ftell(output_file);
+#endif
+    fclose(output_file);
     if (payload_end < data_start_offset) {
-        fclose(output_file);
         fprintf(stderr, "Error: Inconsistent payload bounds\n");
         return UB_ERROR_UNKNOWN;
     }
-    fclose(output_file);
 
     FILE* hash_in = fopen(config->output_path, "rb");
     if (!hash_in) {

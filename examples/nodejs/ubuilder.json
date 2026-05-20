@@ -4,6 +4,7 @@
   "runtime": "node",
   "entry_point": "main.js",
   "description": "Simple Node.js Hello World application",
+  "console": true,
   "dependencies": [],
   "build": {
     "compression": true,

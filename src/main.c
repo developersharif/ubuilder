@@ -96,7 +96,11 @@ static ub_result_t fill_defaults(ub_config_t* config) {
         }
         if (!name_buf[0]) snprintf(name_buf, sizeof(name_buf), "app");
         char out_buf[512];
+#ifdef PLATFORM_WINDOWS
+        snprintf(out_buf, sizeof(out_buf), "dist/%s.exe", name_buf);
+#else
         snprintf(out_buf, sizeof(out_buf), "dist/%s", name_buf);
+#endif
         config->output_path = strdup(out_buf);
         if (!config->output_path) return UB_ERROR_MEMORY_ALLOCATION;
         if (config->verbose) {
@@ -104,6 +108,24 @@ static ub_result_t fill_defaults(ub_config_t* config) {
                     config->output_path);
         }
     }
+
+#ifdef PLATFORM_WINDOWS
+    /* Windows requires .exe extension to be treated as an executable.
+     * Auto-append it when the user didn't include it explicitly. */
+    if (config->output_path) {
+        size_t op_len = strlen(config->output_path);
+        int needs_exe = (op_len < 4 ||
+                         _stricmp(config->output_path + op_len - 4, ".exe") != 0);
+        if (needs_exe) {
+            char* with_exe = (char*)malloc(op_len + 5);
+            if (!with_exe) return UB_ERROR_MEMORY_ALLOCATION;
+            memcpy(with_exe, config->output_path, op_len);
+            memcpy(with_exe + op_len, ".exe", 5);
+            free(config->output_path);
+            config->output_path = with_exe;
+        }
+    }
+#endif
 
     /* (b) auto-exclude the output directory */
     if (config->output_path && config->output_path[0]) {

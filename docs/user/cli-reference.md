@@ -211,9 +211,32 @@ Place in your project root for default settings:
   "runtime": "php",
   "entry_point": "app/bootstrap.php",
   "exclude": ["tests/", "docs/", "*.tmp"],
-  "compress": true
+  "console": true,
+  "compression": true
 }
 ```
+
+#### `console` key — Windows console window
+
+Controls whether the output `.exe` opens a console (terminal) window on Windows.
+
+| Value | Behavior |
+|-------|----------|
+| `false` *(default)* | No console window. The executable runs silently in the background or as a GUI app. Double-clicking it will not flash a terminal. |
+| `true` | A console window is opened. Use this for CLI tools, scripts, or any app that reads stdin or writes to stdout/stderr. |
+
+**Examples:**
+
+```json
+// GUI app (Tk, FFI-based window, tray app) — no console
+{ "runtime": "php", "entry_point": "main.php", "console": false }
+
+// CLI tool (prints output, reads args) — keep console
+{ "runtime": "node", "entry_point": "main.js", "console": true }
+{ "runtime": "python", "entry_point": "main.py", "console": true }
+```
+
+This key is **ignored on Linux and macOS**.
 
 ## Output Information
 

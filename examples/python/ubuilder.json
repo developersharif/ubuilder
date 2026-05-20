@@ -4,6 +4,7 @@
   "runtime": "python",
   "entry_point": "main.py",
   "description": "Simple Python Hello World application",
+  "console": true,
   "dependencies": [],
   "build": {
     "compression": true,

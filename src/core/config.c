@@ -86,7 +86,7 @@ static char* slurp_file(const char* path, size_t* out_len) {
 /* ---------- known-key table (helps detect typos) ---------- */
 static const char* KNOWN_ROOT_KEYS[] = {
     "schema_version", "name", "runtime", "entry_point", "output",
-    "include", "exclude", "verbose", "gui", "compression",
+    "include", "exclude", "verbose", "gui", "compression", "console",
     "runtime_options", "build",
     NULL
 };
@@ -398,6 +398,15 @@ ub_result_t ub_config_apply(const ub_config_file_t*  file,
             int rc = expect_bool(file->path, "compression", v, &b);
             if (rc < 0) return UB_ERROR_INVALID_ARGS;
             if (rc > 0) cfg->enable_compression = b;
+        }
+    }
+    {
+        const json_value_t* v = json_obj_get(file->root, "console");
+        if (v) {
+            int b = 0;
+            int rc = expect_bool(file->path, "console", v, &b);
+            if (rc < 0) return UB_ERROR_INVALID_ARGS;
+            if (rc > 0) cfg->console_window = b;
         }
     }
 

@@ -819,6 +819,8 @@ static ub_result_t php_embed_windows_runtime(const char* php_dir, FILE* output_f
         "php_filter.dll",      // Input filtering
         "php_hash.dll",        // Hashing functions
         "php_ctype.dll",       // Character type checking
+        "php_ffi.dll",         // FFI — required by php-gui and native library integrations
+        "php_sockets.dll",     // Sockets — needed by IPC / GUI event bridges
         NULL
     };
     
@@ -1071,18 +1073,30 @@ static ub_result_t php_embed_files_recursive(const char* dir_path, const char* b
         snprintf(full_path, sizeof(full_path), "%s\\%s", dir_path, find_data.cFileName);
         
         if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            /* Skip dot-dirs (.git, .composer, .idea, etc.) */
+            if (find_data.cFileName[0] == '.') continue;
+            {
+                const char* rel_dir = full_path + strlen(base_path);
+                if (*rel_dir == '\\') rel_dir++;
+                if (ub_path_excluded((const char* const*)g_php_exclude_pats,
+                                     g_php_exclude_count, rel_dir, 1)) continue;
+            }
             // Recursively process subdirectory
             php_embed_files_recursive(full_path, base_path, output_file);
         } else {
-            // Check if it's a PHP file or other relevant file
-            const char* ext = strrchr(find_data.cFileName, '.');
-            if (ext && (strcmp(ext, ".php") == 0 || strcmp(ext, ".json") == 0 || strcmp(ext, ".txt") == 0 || 
-                       strcmp(ext, ".dll") == 0 || strcmp(ext, ".exe") == 0 || strcmp(ext, ".pdb") == 0 ||
-                       strcmp(ext, ".lib") == 0 || strcmp(ext, ".xml") == 0 || strcmp(ext, ".ini") == 0 ||
-                       strcmp(ext, ".so") == 0 || strcmp(ext, ".dylib") == 0)) {
+            /* Skip dotfiles (.gitignore, .env, etc.) */
+            if (find_data.cFileName[0] == '.') continue;
+            /* No extension whitelist — bundle ALL files like the POSIX branch
+             * does.  Tcl/Tk script libraries (.tcl), timezone data, and other
+             * resource files without recognised extensions must be included so
+             * Tcl_Init() can find init.tcl.  Rely on ub_path_excluded() to
+             * drop anything the user excluded (e.g. dist/**). */
+            {
                 // Calculate relative path from project root
                 const char* rel_path = full_path + strlen(base_path);
                 if (*rel_path == '\\') rel_path++; // Skip leading backslash
+                if (ub_path_excluded((const char* const*)g_php_exclude_pats,
+                                     g_php_exclude_count, rel_path, 0)) continue;
 #else
     DIR* dir = opendir(dir_path);
     if (!dir) {

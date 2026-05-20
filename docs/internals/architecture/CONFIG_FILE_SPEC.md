@@ -2,7 +2,7 @@
 
 **Status:** Implemented (v1). Core schema + discovery + CLI/config precedence shipped.
 Honored keys: `schema_version`, `runtime`, `entry_point`, `output`, `name` (as output default),
-`verbose`, `gui`, `compression`, `exclude`, `runtime_options.<rt>.{source,use_host}`.
+`verbose`, `gui`, `compression`, `console`, `exclude`, `runtime_options.<rt>.{source,use_host}`.
 Parsed-but-not-yet-honored: `include`, `build.*`.
 Auto-write: a successful build with no `ubuilder.json` in `--project-dir` writes one capturing
 the resolved runtime, entry_point, name, and exclude list. Subsequent builds reuse it.
@@ -56,7 +56,7 @@ If `--config` is given and the file is missing, that's an error (exit non-zero).
   "exclude": ["**/__pycache__/**", "**/*.test.py"],
 
   "verbose": false,
-  "gui": false,
+  "console": true,
   "compression": true,
 
   "runtime_options": {
@@ -104,7 +104,7 @@ Everything else has a default (see §3.3).
 | `include` | string[] | `["**/*"]` | Glob patterns matched relative to the config file's dir. Parsed but not honored yet — every file in the project dir is embedded unless dropped by `exclude`. |
 | `exclude` | string[] | `[]` | Three categories, all applied: (a) file/dir glob patterns skipped during app embed (`*`, `**`, `?`, `[abc]`, `[a-z]`, `[!abc]`, leading-`/` anchor, trailing-`/` dir-only); (b) PHP `ext-<name>` (or bare `<name>`) drops the entry from the composer-declared extension list AND passes `--ignore-platform-req=ext-<name>` to `composer install`; (c) Python wheel name (PEP-503-normalized) filters `requirements.txt` before pip runs; (d) Node module name removes the key from `dependencies`/`devDependencies`/`optionalDependencies`/`peerDependencies` of the staged `package.json` (lockfile is dropped if anything changed). Excluded deps invalidate the install-cache key, so cache hits stay correct across exclude changes. |
 | `verbose` | bool | `false` | |
-| `gui` | bool | `false` | Honored only after audit §4.2 M7 lands; warn-and-ignore today. |
+| `console` | bool | `false` | **Windows only.** When `false` (default), the output `.exe` runs without a console window (PE subsystem set to GUI). Set to `true` for CLI tools, scripts, or anything that writes to stdout/stderr. Ignored on Linux and macOS. |
 | `compression` | bool | `true` if `ENABLE_COMPRESSION` was on at build time, else `false` | |
 | `runtime_options.<runtime>` | object | `{}` | Per-runtime nested map. Only the matching subkey is read. |
 | `build.clean` | bool | `false` | If true, wipe `output` parent dir before building. |
@@ -131,6 +131,7 @@ For every CLI flag that has a config equivalent: **CLI wins**. Specifically:
 | `--entry-point`, `-e` | `entry_point` |
 | `--gui`, `-g` | `gui` |
 | `--verbose`, `-v` | `verbose` |
+| (no CLI flag — config only) | `console` |
 | `--runtime-source <path>` | `runtime_options.<rt>.source` |
 | `--use-host-runtime` | `runtime_options.<rt>.use_host` |
 | `--no-install-deps` | (no config equivalent yet) |

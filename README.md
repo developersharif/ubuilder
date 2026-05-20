@@ -276,12 +276,25 @@ Full schema (every field optional except `runtime` + `entry_point`):
   "output": "dist/my-app",
   "exclude": ["tests/**", "*.md", "six"],
   "verbose": false,
-  "gui": false,
+  "console": true,
   "compression": true,
   "runtime_options": {
     "python": { "source": "/opt/cpython-3.12", "use_host": false }
   }
 }
+```
+
+#### `console` — Windows console window control
+
+| Value | Effect |
+|-------|--------|
+| `false` (default) | Output executable runs **without** a console window (GUI subsystem). Double-clicking shows no terminal. Right for GUI apps and background services. |
+| `true` | Output executable keeps its console window. Right for CLI tools, scripts, or anything that prints to stdout/stderr. |
+
+On Linux and macOS this key is ignored — terminal visibility is determined by how the process is launched, not by the binary itself.
+
+```json
+{ "runtime": "node", "entry_point": "main.js", "console": true }
 ```
 
 - **CLI flags override config keys** — except `--exclude`, which **appends** to the config's `exclude` array.
@@ -311,6 +324,8 @@ The zero-flag path is the default. Pass these for non-default cases:
 | `--verbose` / `-v` | Show every spawned subprocess |
 | `--version` / `-V` | Print the ubuilder version |
 | `--help` / `-h` | Show all flags |
+
+> **Windows console window:** set `"console": true` in `ubuilder.json` for CLI tools. GUI apps default to no console window. See the [`ubuilder.json` manifest](#ubjuilderjson-manifest) section above.
 
 ---
 
