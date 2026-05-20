@@ -140,7 +140,9 @@ run_case() {
             --output="$bundle_out" \
             >"$case_work/build.log" 2>&1; then
         fail "ubuilder build failed (see $case_work/build.log)"
-        sed 's/^/    /' "$case_work/build.log" | tail -n 20
+        echo "    --- build.log size $(wc -c < "$case_work/build.log" 2>/dev/null || echo '?') bytes ---"
+        sed 's/^/    /' "$case_work/build.log"
+        echo "    --- end build.log ---"
         return 1
     fi
     if [[ ! -x "$bundle_out" ]]; then
