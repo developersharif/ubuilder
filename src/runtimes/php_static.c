@@ -7,7 +7,13 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
-#include <unistd.h>
+#ifdef _WIN32
+#  include <process.h>   /* _getpid */
+#  include <io.h>        /* _chmod-ish */
+#  define getpid _getpid
+#else
+#  include <unistd.h>
+#endif
 
 /* Hardcoded — same approach as update_check.c. Switching repos would
  * need a recompile (intentional: we don't want a runtime-tweakable
