@@ -5,6 +5,23 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **macOS PHP probe vs. PHP startup warnings on stdout:** when the host
+  PHP's config tried to load an extension that no longer exists on disk
+  (e.g. Laravel Herd uninstalled but `extension=/Applications/Herd.app/...`
+  still in some `conf.d/*.ini`), PHP duplicated its `Unable to load
+  dynamic library` warning to STDOUT in addition to STDERR. The duplicate
+  text overflowed our 1024-byte probe buffer and `php_probe_extension_dir`
+  returned `-1`, aborting the build with `Error: could not probe host PHP
+  for extension_dir`. Now every host-PHP probe (`-r`, `-m`, `--ini`)
+  passes `-d display_errors=stderr -d display_startup_errors=Off` so
+  warnings stay on STDERR and our captured STDOUT contains only the
+  value we asked for. The user's broken config is otherwise untouched —
+  the warning still prints, but ubuilder no longer chokes on it.
+
 ## [v2.4.1] - 2026-05-20
 
 ### Fixed

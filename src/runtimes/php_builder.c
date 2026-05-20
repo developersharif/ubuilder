@@ -243,7 +243,13 @@ static int php_probe_ini_paths(const char* php_bin,
     if (main_cap) main_ini[0] = 0;
     if (scan_cap) scan_dir[0] = 0;
 
-    char* argv[] = { (char*)php_bin, (char*)"--ini", NULL };
+    char* argv[] = {
+        (char*)php_bin,
+        (char*)"-d", (char*)"display_errors=stderr",
+        (char*)"-d", (char*)"display_startup_errors=Off",
+        (char*)"--ini",
+        NULL
+    };
     char* captured = NULL;
     if (pc_spawn_capture(php_bin, argv, NULL, NULL, 16384, &captured) != 0 || !captured) {
         free(captured);
@@ -351,7 +357,16 @@ static int php_list_loaded_modules(const char* php_bin, php_ext_list_t* out) {
     out->names = NULL;
     out->count = 0;
 
-    char* argv[] = { (char*)php_bin, (char*)"-m", NULL };
+    /* Silence display_errors → stdout duplication so any stale
+     * extension load failure (Herd uninstalled, etc.) doesn't pollute
+     * the captured module list with warning text. */
+    char* argv[] = {
+        (char*)php_bin,
+        (char*)"-d", (char*)"display_errors=stderr",
+        (char*)"-d", (char*)"display_startup_errors=Off",
+        (char*)"-m",
+        NULL
+    };
     char* captured = NULL;
     if (pc_spawn_capture(php_bin, argv, NULL, NULL, 16384, &captured) != 0 || !captured) {
         free(captured);
@@ -397,16 +412,27 @@ static int php_list_loaded_modules(const char* php_bin, php_ext_list_t* out) {
 
 /* Probe `<php_bin> -r 'echo ini_get("extension_dir");'`. Returns 0 / -1.
  *
- * NOTE: do NOT pass `-d extension_dir=` to clear the value first — that
- * would return PHP's compile-time default, which on Homebrew points at
- * `/opt/homebrew/Cellar/php/<ver>/lib/php/<api>/` (a path that doesn't
+ * NOTE 1: do NOT pass `-d extension_dir=` to clear the value first —
+ * that would return PHP's compile-time default, which on Homebrew points
+ * at `/opt/homebrew/Cellar/php/<ver>/lib/php/<api>/` (a path that doesn't
  * exist on disk; Homebrew's pecl extensions actually live at
  * `/opt/homebrew/lib/php/pecl/<api>/`, configured via the host php.ini).
  * Asking PHP without the override returns the runtime-effective value
- * the host's php.ini actually loads from. */
+ * the host's php.ini actually loads from.
+ *
+ * NOTE 2: `-d display_errors=stderr -d display_startup_errors=Off`
+ * silences PHP's "PHP Warning: Unable to load dynamic library ..."
+ * duplicate that otherwise lands on STDOUT (CLI default duplicates
+ * startup errors to display_errors target). Without this, a host with
+ * a stale extension reference (e.g. Laravel Herd uninstalled but
+ * Homebrew PHP's conf.d still loading `/Applications/Herd.app/...`)
+ * floods stdout with kilobytes of warning text, blowing past our
+ * fixed-size capture buffer and making the probe return -1. */
 static int php_probe_extension_dir(const char* php_bin, char* out, size_t out_cap) {
     char* argv[] = {
         (char*)php_bin,
+        (char*)"-d", (char*)"display_errors=stderr",
+        (char*)"-d", (char*)"display_startup_errors=Off",
         (char*)"-r", (char*)"echo ini_get(\"extension_dir\");",
         NULL
     };
