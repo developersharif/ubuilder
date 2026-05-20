@@ -5,6 +5,40 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **PHP on macOS (statically linked host):** the synthetic-runtime builder
+  now detects when the host PHP's reported `extension_dir` doesn't exist on
+  disk and treats the binary as statically linked. Every extension is
+  already baked into the executable, so we ship `bin/php` + host
+  `php.ini`/`conf.d` as-is and skip the `.so` enumeration entirely.
+  Works out-of-the-box with Laravel Herd and any `static-php-cli` output —
+  the very M1-D path the docs promised. Composer's `require.ext-*` is now
+  cross-checked against `php -m` rather than a directory scan when host
+  PHP is static.
+- **macOS dyld rewiring (cross-Mac portability):** after staging
+  `bin/php` + `ext/*.so`, `php_builder.c` now BFS-walks `otool -L`
+  output, hardlinks every non-system dylib dep into `<bundle>/lib/`,
+  rewrites each Mach-O's load commands to `@executable_path/../lib/<name>`
+  via `install_name_tool`, and ad-hoc re-signs every modified file with
+  `codesign --force --sign -`. Result: a bundle built against dynamic
+  Homebrew/MacPorts PHP (with custom `.so` extensions like `imagick`,
+  `xdebug`, etc.) now runs on a fresh Mac with **zero** non-system
+  dependencies. Statically linked host PHP (Herd) has no non-system deps,
+  so the pass completes as a no-op — same bundle as before.
+- **`tests/bundle/assert-macos-portable.sh`** asserts no Mach-O in a
+  bundle references `/opt/*`, `/usr/local/*`, `$HOME`, etc. Wired into
+  the PHP bundle suite on macOS.
+- **`examples/build-examples-macos.sh`** no longer skips the PHP example;
+  it builds and runs alongside Python and Node.
+- **`tests/bundle/run-bundle-tests.sh`** runs all five PHP cases (`php`,
+  `php-with-deps`, `php-missing-ext`, `php-exclude-ext`, `php-autoconfig`)
+  on macOS now. The missing-ext assertion accepts either the Linux
+  apt/dnf install hint or the static-PHP "rebuild static-php-cli"
+  variant.
+
 ## [2.3.0] - 2026-05-20
 
 ### Added
@@ -180,7 +214,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known limitations
 
 - **PHP bundles are tied to the build host's libxml2 SONAME family.** The host's `/usr/bin/php` is hardlinked into the bundle and dynamically links `libxml2.so.<N>` (currently `.16` on Ubuntu 24.10+ / Debian Trixie+, `.2` on older glibc distros). A bundle built on Ubuntu 25.10 will fail with `libxml2.so.16: cannot open shared object file` when run on Debian 12 / Ubuntu 22.04. Truly hermetic ldd-bundling is future work; today, build on the same distro family as your deployment target. See `src/runtimes/php_builder.c` block comment.
-- **PHP runtime on macOS is not supported in this release.** M1-D's synthetic-runtime path assumes Linux's `extension_dir` layout (`<prefix>/lib/php/<date>/`) and `apt`-shaped extension naming. Homebrew PHP's `Cellar/php/<ver>/lib/php/<datestamp>/` path + Mach-O extension files aren't handled yet. `examples/build-examples-macos.sh` skips the PHP example cleanly until M1-D-macos lands. Python and Node bundles on macOS are supported and hermetic.
+- **PHP on macOS** works with any host PHP — statically linked (Herd, `static-php-cli`) or dynamic (Homebrew, MacPorts). The builder detects static PHP and ships the binary as-is; for dynamic PHP it bundles every non-system dylib and rewrites Mach-O load commands so the result runs on a fresh Mac. Custom extensions installed via `pecl install` / `brew install php-imagick` are picked up via the normal `extension_dir` enumeration path.
 - **Release script**: previous `create-release.sh` had two bugs that would have corrupted a release (`sed s/#define UBUILDER_VERSION.*/.../` clobbered MAJOR/MINOR/PATCH to the same string; CHANGELOG step always prepended a stub that pushed curated content down). Both fixed; the script now supports `--dry-run` and is idempotent on a pre-bumped tree.
 
 ### Fixed in this release (post-tag-cut)

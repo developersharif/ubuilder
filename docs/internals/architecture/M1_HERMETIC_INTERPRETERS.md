@@ -1,6 +1,6 @@
 # M1 — Hermetic Interpreters
 
-**Status:** ✅ Python + Node end-to-end + **Tier-3 Docker test passes** + **hermetic-by-default DX shipped** (M1-A/B/C/E + cache auto-discovery + `--use-host-runtime` opt-in). After one-time `scripts/vendor-runtimes.sh`, plain `ubuilder` produces hermetic bundles. PHP builder accepts `--runtime-source=<binary>` (M1-D plumbing done) but no upstream pre-built static PHP exists — `static-php-cli` is the documented self-build path; PHP excluded from Tier-3 until that lands.
+**Status:** ✅ Python + Node end-to-end + **Tier-3 Docker test passes** + **hermetic-by-default DX shipped** (M1-A/B/C/E + cache auto-discovery + `--use-host-runtime` opt-in). After one-time `scripts/vendor-runtimes.sh`, plain `ubuilder` produces hermetic bundles. PHP builder accepts `--runtime-source=<binary>` (M1-D plumbing done) and, on macOS, auto-detects statically linked host PHP (Laravel Herd / `static-php-cli` output) — no vendored tarball needed, the binary IS the hermetic runtime. Linux still uses the host-bits-hermetic synthesis path; PHP remains excluded from Tier-3 Docker until a true upstream binary lands.
 **Companion to:** `ARCHITECTURE_AUDIT.md` (this implements M1).
 **Goal:** UBuilder bundles stop depending on the build host's `/usr/bin/python3` (etc.). The bundle's interpreter is a vendored, redistributable build whose ABI is independent of whatever ran the build.
 
@@ -12,7 +12,7 @@ This is the single biggest hermeticity step in the audit. After M1, paired with 
 |---|---|---|---|
 | Python | [`astral-sh/python-build-standalone`](https://github.com/astral-sh/python-build-standalone) | `cpython-3.12.13+20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz` (~32 MB) | PSF / Apache-2 |
 | Node   | [`nodejs.org` official](https://nodejs.org/dist/) | `node-v24.15.0-linux-x64.tar.xz` (~25 MB; glibc 2.28+) | MIT + V8 BSD |
-| PHP    | **No upstream pre-built static binary.** Workaround: build with [`crazywhalecc/static-php-cli`](https://github.com/crazywhalecc/static-php-cli) and pass the result via `--runtime-source`. M1-D will automate this. | TBD | PHP License |
+| PHP    | **No upstream pre-built static binary** (truly universal Linux). Workaround: build with [`crazywhalecc/static-php-cli`](https://github.com/crazywhalecc/static-php-cli) and pass the result via `--runtime-source`. **On macOS the workaround is the default**: Laravel Herd already ships `static-php-cli` output, and the builder auto-detects it (probed `extension_dir` is non-existent → treat as static, ship as-is). | TBD on Linux; per-host on macOS | PHP License |
 
 We do **not** build interpreters from source ourselves in this repo — that's a multi-day operation per platform-arch and is not where UBuilder's value lives. We consume upstream binary releases with pinned SHA-256s.
 
@@ -128,7 +128,7 @@ CI wires Docker mode after the static-launcher harness.
 Deferred:
 
 - M1-C: Tier-3 Docker test. Requires this commit's runtime tree extraction to work in a no-Python-on-PATH container.
-- M1-D: PHP (`php-static` integration).
+- M1-D: PHP (`php-static` integration) — partially landed: macOS detects statically linked host PHP and ships it as the hermetic runtime; Linux universal-static still TBD.
 - M1-E: Node (musl-static).
 - M5: content-addressed cache (multiple bundles share extracted tree).
 - arm64 / macOS in the vendor manifest.

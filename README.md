@@ -185,7 +185,7 @@ EOF
 ubuilder                                # composer install runs in a staged copy
 ```
 
-PHP bundles work only on machines with PHP's shared libraries installed (`libxml2`, `libssl`, `libsodium`, …). For most servers this is a non-issue (any host with `php-cli` available). See [Status](#status) for the libxml2 SONAME caveat.
+PHP bundles built on **Linux** run on any target machine that has the same shared libraries the host PHP linked against (`libxml2`, `libssl`, `libsodium`, …) — for most servers this is a non-issue. PHP bundles built on **macOS** run on any Mac with no extra dependencies: the builder bundles every non-system dylib from the host PHP's transitive dep graph and rewrites Mach-O load commands to bundle-relative paths. See [Status](#status) for the libxml2 SONAME caveat that still applies on Linux.
 
 ---
 
@@ -335,16 +335,24 @@ The zero-flag path is the default. Pass these for non-default cases:
 |---|---|---|---|---|
 | **Python** | ✅ Hermetic | ✅ Hermetic | ✅ Host | Tier-3 Docker isolation passing on Linux + macOS |
 | **Node.js** | ✅ Hermetic | ✅ Hermetic | ✅ Host | Tier-3 Docker isolation passing on Linux + macOS |
-| **PHP** | ✅ Host-bits hermetic | ⚠️ Roadmap | ✅ Host | M1-D Linux ships embedded `bin/php` + composer extensions |
+| **PHP** | ✅ Host-bits hermetic | ✅ Fresh-Mac portable | ✅ Host | M1-D ships embedded `bin/php` + composer extensions on Linux; on macOS the builder additionally walks `otool -L` and rewrites every non-system dylib ref to `@executable_path/../lib/...` so the bundle runs on any Mac (Herd / static-php-cli is a no-op; Homebrew/MacPorts gets full dyld rewiring) |
 
 Known limitations:
 
 - PHP cross-distro portability: bundles include the host's `libxml2.so.<N>`.
   Build on the same distro family as your deployment target. Ubuntu 24.10+
   and Debian Trixie+ both ship `libxml2.so.16`; older distros ship `.so.2`.
-- PHP on macOS: the synthetic-runtime path assumes a Linux `extension_dir`
-  layout; Homebrew's Cellar isn't handled yet. The macOS example build
-  skips the PHP fixture with a clear message.
+- PHP on macOS bundles are now fresh-Mac portable. Statically linked
+  hosts (Laravel Herd, `static-php-cli`) ship their binary as-is — every
+  extension is baked in and only system frameworks are referenced.
+  Dynamic hosts (Homebrew, MacPorts, custom builds) trigger a Mach-O
+  rewiring pass: each non-system dylib in the host PHP's transitive dep
+  graph is hardlinked into `<bundle>/lib/`, every `LC_LOAD_DYLIB`
+  reference is rewritten via `install_name_tool -change` to
+  `@executable_path/../lib/<name>`, and each modified file is ad-hoc
+  re-signed with `codesign --force --sign -`. User-installed extensions
+  (`pecl install xdebug`, `brew install php-imagick`, etc.) follow the
+  same path automatically.
 - Windows: bundles use the host's `python.exe` / `node.exe` / `php.exe`
   rather than a vendored hermetic tree. Hermetic Windows is on the roadmap.
 
@@ -420,8 +428,7 @@ cmake --build . -j && ./tests/test_ubuilder
 
 Areas where help is most welcome:
 
-- **Hermetic PHP on Linux** without the libxml2 SONAME caveat (ldd-driven shared-lib bundling).
-- **Hermetic PHP on macOS** — adapt `src/runtimes/php_builder.c`'s M1-D synthesis to Homebrew's Cellar layout.
+- **Hermetic PHP on Linux** without the libxml2 SONAME caveat — port the macOS Mach-O rewiring approach (`src/runtimes/php_builder.c` `mac_make_bundle_portable`) to ELF: walk `ldd`, bundle non-system `.so` deps, set `DT_RUNPATH=$ORIGIN/../lib`.
 - **Hermetic Windows runtimes** — vendor a portable Python / Node tree like Linux/macOS already do.
 - **Lockfile reproducibility** for Python (`requirements.lock`) and PHP (`composer.lock`-driven `--no-deps`).
 - **More tier-3 backends** — e.g. `nix-shell` for fully reproducible Tier-3 tests.

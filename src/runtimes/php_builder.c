@@ -333,6 +333,60 @@ static int php_copy_host_confd(const char* src_dir, const char* dst_dir,
     return copied;
 }
 
+/* Probe `<php_bin> -m` and return the list of loaded modules (lowercased,
+ * one per non-empty non-`[`-prefixed line). Used when host PHP is
+ * statically linked: there is no `extension_dir` to scan, but `php -m`
+ * still reports every built-in module so we can cross-check composer's
+ * `require.ext-*` against what the binary actually provides. Caller frees
+ * with php_ext_list_free. Returns 0 on success, -1 on probe failure. */
+static int php_list_loaded_modules(const char* php_bin, php_ext_list_t* out) {
+    out->names = NULL;
+    out->count = 0;
+
+    char* argv[] = { (char*)php_bin, (char*)"-m", NULL };
+    char* captured = NULL;
+    if (pc_spawn_capture(php_bin, argv, NULL, NULL, 16384, &captured) != 0 || !captured) {
+        free(captured);
+        return -1;
+    }
+
+    /* First pass to count, second to fill. `php -m` emits sections like
+     * `[PHP Modules]` and `[Zend Modules]` plus module names — we keep
+     * non-bracketed non-empty lines and lowercase them so the
+     * cross-check against composer's lowercase `ext-<name>` works. */
+    size_t cap = 0;
+    for (char* p = captured; *p; ) {
+        char* nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len > 0 && p[0] != '[') cap++;
+        if (!nl) break;
+        p = nl + 1;
+    }
+    if (cap == 0) { free(captured); return 0; }
+    out->names = (char**)calloc(cap, sizeof(char*));
+    if (!out->names) { free(captured); return -1; }
+
+    for (char* p = captured; *p; ) {
+        char* nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        while (len > 0 && (p[len-1] == '\r' || p[len-1] == ' ' || p[len-1] == '\t')) len--;
+        if (len > 0 && p[0] != '[') {
+            char* dup = (char*)malloc(len + 1);
+            if (!dup) { php_ext_list_free(out); free(captured); return -1; }
+            for (size_t i = 0; i < len; i++) {
+                char c = p[i];
+                dup[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+            }
+            dup[len] = 0;
+            out->names[out->count++] = dup;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    free(captured);
+    return 0;
+}
+
 /* Probe `<php_bin> -r 'echo ini_get("extension_dir");'`. Returns 0 / -1. */
 static int php_probe_extension_dir(const char* php_bin, char* out, size_t out_cap) {
     char* argv[] = {
@@ -385,6 +439,388 @@ static int php_write_default_ini(const char* ini_path,
     fclose(f);
     return 0;
 }
+
+#ifdef __APPLE__
+/* ============================================================
+ * macOS dyld rewiring (cross-Mac portability)
+ *
+ * On macOS, Mach-O binaries reference their dependencies by absolute
+ * path baked into LC_LOAD_DYLIB load commands. A bundle that includes
+ * Homebrew's /opt/homebrew/bin/php has refs like
+ *   /opt/homebrew/opt/libxml2/lib/libxml2.2.dylib
+ * which won't resolve on a clean target Mac. To make bundles portable
+ * across Macs we:
+ *   1. otool -L every bundled Mach-O, gather non-system dep paths
+ *   2. recursively copy each into <bundle>/lib/<basename>
+ *   3. install_name_tool -change every absolute non-system ref to
+ *      @executable_path/../lib/<basename> (resolves at runtime against
+ *      the dir of the exec'd binary, which is always <tmp>/runtime/bin/)
+ *   4. install_name_tool -id on each bundled dylib so it advertises
+ *      itself with the same @executable_path-relative install name
+ *   5. codesign --force --sign - to ad-hoc re-sign each modified file
+ *      (Apple Silicon requires a valid signature even for unsigned
+ *      ad-hoc binaries; install_name_tool invalidates the existing one)
+ *
+ * "System" dylibs (/usr/lib/* and /System/*) are NOT bundled — they're
+ * guaranteed present on every macOS install. Statically linked PHP
+ * (Herd / static-php-cli) only references those system paths, so this
+ * whole pass is a no-op on that path.
+ * @rpath references are deliberately out of scope for v1 (would need
+ * LC_RPATH parsing); they're warned and skipped — vanishingly rare in
+ * the PHP/ext-* set we care about.
+ * ============================================================ */
+
+/* Minimal growable string list, used as both a queue and a "seen" set. */
+typedef struct {
+    char** items;
+    size_t count;
+    size_t cap;
+} mac_strs_t;
+
+static void mac_strs_free(mac_strs_t* l) {
+    if (!l) return;
+    for (size_t i = 0; i < l->count; i++) free(l->items[i]);
+    free(l->items);
+    l->items = NULL;
+    l->count = l->cap = 0;
+}
+
+static int mac_strs_push(mac_strs_t* l, const char* s) {
+    if (l->count == l->cap) {
+        size_t nc = l->cap ? l->cap * 2 : 16;
+        char** ni = (char**)realloc(l->items, nc * sizeof(char*));
+        if (!ni) return -1;
+        l->items = ni;
+        l->cap = nc;
+    }
+    char* dup = strdup(s);
+    if (!dup) return -1;
+    l->items[l->count++] = dup;
+    return 0;
+}
+
+static int mac_strs_contains(const mac_strs_t* l, const char* s) {
+    for (size_t i = 0; i < l->count; i++) {
+        if (strcmp(l->items[i], s) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Dylibs under /usr/lib/ and frameworks under /System/ are part of the
+ * macOS base install — every Mac has them. Bundling them would just
+ * inflate the binary; on Apple Silicon they're cached in the dyld
+ * shared cache and aren't even on-disk anymore. */
+static int mac_is_system_dylib(const char* path) {
+    return strncmp(path, "/usr/lib/", 9) == 0
+        || strncmp(path, "/System/", 8) == 0;
+}
+
+/* Parse `otool -L <mach_o>` output. Each non-header line is a dep of the
+ * form "\t<path> (compatibility version X, current version Y)". Push the
+ * <path> portion into `out`. For dylibs the first dep line is the file's
+ * own LC_ID_DYLIB — caller is expected to deal with that (skip when
+ * recursing, but include when rewriting since we want to update the
+ * install name too). */
+static int mac_otool_deps(const char* mach_o_path, mac_strs_t* out) {
+    char* otool = pc_path_lookup("otool");
+    if (!otool) {
+        fprintf(stderr, "Error: otool not found on PATH (install Xcode Command Line Tools)\n");
+        return -1;
+    }
+    char* argv[] = { otool, (char*)"-L", (char*)mach_o_path, NULL };
+    char* captured = NULL;
+    int rc = pc_spawn_capture(otool, argv, NULL, NULL, 65536, &captured);
+    free(otool);
+    if (rc != 0 || !captured) { free(captured); return -1; }
+
+    char* save = NULL;
+    int header_skipped = 0;
+    for (char* line = strtok_r(captured, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        /* The first non-blank line ends with ':' and names the inspected
+         * file — drop it. Subsequent dep lines begin with whitespace. */
+        if (!header_skipped) {
+            header_skipped = 1;
+            char* end = line + strlen(line);
+            while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
+            if (end > line && end[-1] == ':') continue;
+        }
+        while (*line == '\t' || *line == ' ') line++;
+        if (!*line) continue;
+        char* paren = strstr(line, " (compatibility");
+        if (paren) *paren = 0;
+        char* end = line + strlen(line);
+        while (end > line && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
+        *end = 0;
+        if (!*line) continue;
+        if (mac_strs_push(out, line) != 0) {
+            free(captured);
+            return -1;
+        }
+    }
+    free(captured);
+    return 0;
+}
+
+/* Resolve @loader_path/foo and @executable_path/foo against the
+ * referrer's containing directory. Absolute paths pass through. @rpath
+ * refs return -1 (caller treats as best-effort skip). Caller frees *out. */
+static int mac_resolve_ref(const char* referrer, const char* ref, char** out) {
+    *out = NULL;
+    if (ref[0] != '@') {
+        *out = strdup(ref);
+        return *out ? 0 : -1;
+    }
+    const char* tail = NULL;
+    if (strncmp(ref, "@loader_path/", 13) == 0)         tail = ref + 13;
+    else if (strncmp(ref, "@executable_path/", 17) == 0) tail = ref + 17;
+    else return -1;  /* @rpath, etc. */
+
+    char dir[1024];
+    size_t rlen = strlen(referrer);
+    if (rlen >= sizeof(dir)) return -1;
+    memcpy(dir, referrer, rlen + 1);
+    char* slash = strrchr(dir, '/');
+    if (slash) *slash = 0;
+    size_t need = strlen(dir) + 1 + strlen(tail) + 1;
+    *out = (char*)malloc(need);
+    if (!*out) return -1;
+    snprintf(*out, need, "%s/%s", dir, tail);
+    return 0;
+}
+/* BFS over `mach_o`'s transitive non-system dep graph. Each newly-seen
+ * dep is hardlink-or-copied into `bundle_lib_dir/<basename>`, then its
+ * own deps are queued. `seen` is keyed by source-on-disk path so we
+ * don't bundle the same dylib twice when both bin/php and an extension
+ * pull it in. Best-effort: a single unresolvable @rpath ref logs a
+ * warning and keeps going rather than aborting the whole build. */
+static int mac_bundle_deps_recursive(const char* start_mach_o,
+                                     const char* bundle_lib_dir,
+                                     mac_strs_t* seen,
+                                     int verbose) {
+    mac_strs_t queue = {0};
+    if (mac_strs_push(&queue, start_mach_o) != 0) { mac_strs_free(&queue); return -1; }
+
+    int rc = 0;
+    while (queue.count > 0) {
+        char* cur = queue.items[queue.count - 1];
+        queue.items[queue.count - 1] = NULL;
+        queue.count--;
+
+        mac_strs_t deps = {0};
+        if (mac_otool_deps(cur, &deps) != 0) {
+            if (verbose) fprintf(stderr, "  warn: otool -L %s failed\n", cur);
+            free(cur);
+            continue;
+        }
+        for (size_t i = 0; i < deps.count; i++) {
+            const char* dep = deps.items[i];
+            char* resolved = NULL;
+            if (mac_resolve_ref(cur, dep, &resolved) != 0) {
+                if (verbose) fprintf(stderr, "  warn: cannot resolve %s (referrer %s) — skipping\n", dep, cur);
+                continue;
+            }
+            /* Skip self-reference (dylibs' LC_ID_DYLIB shows up here). */
+            if (strcmp(resolved, cur) == 0) { free(resolved); continue; }
+            if (mac_is_system_dylib(resolved)) { free(resolved); continue; }
+            if (mac_strs_contains(seen, resolved)) { free(resolved); continue; }
+
+            const char* base = strrchr(resolved, '/');
+            base = base ? base + 1 : resolved;
+            char dst[1280];
+            snprintf(dst, sizeof(dst), "%s/%s", bundle_lib_dir, base);
+
+            /* If another bundled lib already has the same basename (different
+             * absolute source), refuse to overwrite — log and keep the first. */
+            if (mac_strs_contains(seen, dst)) {
+                if (verbose) fprintf(stderr, "  warn: basename collision for %s — keeping first\n", base);
+                free(resolved);
+                continue;
+            }
+
+            if (pc_copy_or_link_tree(resolved, dst) != 0) {
+                fprintf(stderr, "  warn: failed to bundle %s -> %s\n", resolved, dst);
+                free(resolved);
+                continue;
+            }
+            chmod(dst, 0644);
+            if (verbose) printf("  bundled dylib: %s\n", base);
+
+            /* Track both source and dst so future "have we seen it" checks
+             * succeed regardless of which key the caller uses. */
+            mac_strs_push(seen, resolved);
+            mac_strs_push(seen, dst);
+            mac_strs_push(&queue, dst);
+            free(resolved);
+        }
+        mac_strs_free(&deps);
+        free(cur);
+    }
+    mac_strs_free(&queue);
+    return rc;
+}
+
+/* Rewrite every absolute non-system LC_LOAD_DYLIB ref in `mach_o` to
+ * `@executable_path/../lib/<basename>`. If `set_id_to_self` is non-zero,
+ * also update LC_ID_DYLIB so the dylib advertises itself with the same
+ * @executable_path-relative name (needed for bundled dylibs so other
+ * Mach-Os can reference them consistently). */
+static int mac_rewrite_to_bundle(const char* mach_o, int set_id_to_self, int verbose) {
+    char* int_tool = pc_path_lookup("install_name_tool");
+    if (!int_tool) {
+        fprintf(stderr, "Error: install_name_tool not found (install Xcode Command Line Tools)\n");
+        return -1;
+    }
+
+    mac_strs_t deps = {0};
+    if (mac_otool_deps(mach_o, &deps) != 0) { free(int_tool); return -1; }
+
+    /* Make the file writable in case it came from a read-only hardlink source. */
+    chmod(mach_o, 0755);
+
+    int rc = 0;
+    const char* mach_o_base = strrchr(mach_o, '/');
+    mach_o_base = mach_o_base ? mach_o_base + 1 : mach_o;
+
+    if (set_id_to_self) {
+        char new_id[1024];
+        snprintf(new_id, sizeof(new_id), "@executable_path/../lib/%s", mach_o_base);
+        char* argv[] = { int_tool, (char*)"-id", new_id, (char*)mach_o, NULL };
+        if (pc_spawn_and_wait(int_tool, argv, NULL, NULL) != 0) {
+            if (verbose) fprintf(stderr, "  warn: install_name_tool -id failed on %s\n", mach_o);
+        }
+    }
+
+    for (size_t i = 0; i < deps.count; i++) {
+        const char* dep = deps.items[i];
+        if (dep[0] == '@') continue;             /* already relative */
+        if (mac_is_system_dylib(dep)) continue;  /* /usr/lib or /System */
+
+        const char* base = strrchr(dep, '/');
+        base = base ? base + 1 : dep;
+
+        /* When set_id_to_self is true and this dep is the dylib's own
+         * LC_ID_DYLIB line, skip — we already handled the id above and
+         * install_name_tool -change won't match LC_ID_DYLIB anyway. */
+        if (set_id_to_self && strcmp(base, mach_o_base) == 0) continue;
+
+        char new_ref[1024];
+        snprintf(new_ref, sizeof(new_ref), "@executable_path/../lib/%s", base);
+
+        char* argv[] = { int_tool, (char*)"-change", (char*)dep, new_ref, (char*)mach_o, NULL };
+        if (pc_spawn_and_wait(int_tool, argv, NULL, NULL) != 0) {
+            if (verbose) fprintf(stderr, "  warn: install_name_tool -change %s on %s failed\n", dep, mach_o);
+            /* Non-fatal — continue with remaining deps. */
+        }
+    }
+    mac_strs_free(&deps);
+    free(int_tool);
+    return rc;
+}
+
+/* Ad-hoc re-sign a Mach-O after install_name_tool modified it. Required
+ * on Apple Silicon: the kernel refuses to exec unsigned/broken-signature
+ * Mach-Os from the dyld path. `codesign --sign -` is an ad-hoc identity
+ * (no developer cert needed); --force replaces the now-invalid sig. */
+static int mac_codesign_adhoc(const char* mach_o, int verbose) {
+    char* cs = pc_path_lookup("codesign");
+    if (!cs) {
+        if (verbose) fprintf(stderr, "  warn: codesign not found — bundle may be rejected on Apple Silicon\n");
+        return 0;  /* Best-effort: don't fail the build on x86_64 hosts that may not have it. */
+    }
+    char* argv[] = { cs, (char*)"--force", (char*)"--sign", (char*)"-", (char*)mach_o, NULL };
+    int rc = pc_spawn_and_wait(cs, argv, NULL, NULL);
+    if (rc != 0 && verbose) fprintf(stderr, "  warn: codesign --sign - failed on %s (rc=%d)\n", mach_o, rc);
+    free(cs);
+    return 0;  /* Always best-effort — we don't want to fail builds on a signing edge case. */
+}
+
+/* Top-level macOS portability pass over a fully staged bin/php +
+ * ext/*.so tree. Walks deps, bundles them into <stage>/lib/, rewires
+ * every Mach-O in the tree, ad-hoc-signs everything modified. */
+static void mac_make_bundle_portable(const char* stage_dir, int verbose) {
+    char lib_dir[1024];
+    snprintf(lib_dir, sizeof(lib_dir), "%s/lib", stage_dir);
+    if (pc_mkdir_p(lib_dir) != 0) {
+        fprintf(stderr, "  warn: could not create %s — skipping dyld rewiring\n", lib_dir);
+        return;
+    }
+
+    /* Discover everything that lives in stage_dir/bin and stage_dir/ext.
+     * These are the "roots" of the dep graph. Bundling is BFS; each new
+     * dylib gets pulled into lib_dir and itself becomes a root. */
+    mac_strs_t roots = {0};
+    char p[1024];
+    snprintf(p, sizeof(p), "%s/bin/php", stage_dir);
+    struct stat st;
+    if (stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
+        mac_strs_push(&roots, p);
+    }
+    snprintf(p, sizeof(p), "%s/ext", stage_dir);
+    DIR* d = opendir(p);
+    if (d) {
+        struct dirent* e;
+        while ((e = readdir(d)) != NULL) {
+            const char* nm = e->d_name;
+            const char* dot = strrchr(nm, '.');
+            if (!dot || strcmp(dot, ".so") != 0) continue;
+            char full[1280];
+            snprintf(full, sizeof(full), "%s/%s", p, nm);
+            mac_strs_push(&roots, full);
+        }
+        closedir(d);
+    }
+
+    /* Bundle the transitive closure of non-system deps. */
+    mac_strs_t seen = {0};
+    for (size_t i = 0; i < roots.count; i++) {
+        mac_bundle_deps_recursive(roots.items[i], lib_dir, &seen, verbose);
+    }
+
+    /* Now rewrite every Mach-O in the tree (roots + bundled libs). The
+     * roots are NOT dylibs in the LC_ID_DYLIB sense (bin/php is an
+     * executable; ext/*.so are bundles with no install name worth
+     * advertising) so don't touch their id. Bundled lib/*.dylib DO get
+     * an -id rewrite so they declare themselves @executable_path-relative. */
+    for (size_t i = 0; i < roots.count; i++) {
+        mac_rewrite_to_bundle(roots.items[i], 0, verbose);
+        mac_codesign_adhoc(roots.items[i], verbose);
+    }
+
+    DIR* dl = opendir(lib_dir);
+    if (dl) {
+        struct dirent* e;
+        while ((e = readdir(dl)) != NULL) {
+            const char* nm = e->d_name;
+            if (nm[0] == '.') continue;
+            char full[1280];
+            snprintf(full, sizeof(full), "%s/%s", lib_dir, nm);
+            struct stat lst;
+            if (stat(full, &lst) != 0 || !S_ISREG(lst.st_mode)) continue;
+            mac_rewrite_to_bundle(full, 1, verbose);
+            mac_codesign_adhoc(full, verbose);
+        }
+        closedir(dl);
+    }
+
+    if (verbose) {
+        size_t bundled = 0;
+        DIR* dlv = opendir(lib_dir);
+        if (dlv) {
+            struct dirent* e;
+            while ((e = readdir(dlv)) != NULL) {
+                if (e->d_name[0] == '.') continue;
+                bundled++;
+            }
+            closedir(dlv);
+        }
+        printf("macOS dyld rewiring: %zu dylib%s bundled in %s/lib\n",
+               bundled, bundled == 1 ? "" : "s", stage_dir);
+    }
+
+    mac_strs_free(&seen);
+    mac_strs_free(&roots);
+}
+#endif  /* __APPLE__ */
 
 /* Compose a synthetic runtime tree at `stage_dir` containing:
  *   bin/php                                (hardlink/copy of host php)
@@ -497,6 +933,17 @@ static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
         }
     }
     if (missing > 0) return UB_ERROR_RUNTIME_NOT_FOUND;
+
+#ifdef __APPLE__
+    /* macOS portability pass: bundle non-system dylibs, rewrite Mach-O
+     * load commands to @executable_path-relative paths, ad-hoc re-sign.
+     * For statically linked host PHP (Herd) every dep is /usr/lib or
+     * /System and this completes as a no-op (no dylibs bundled, no refs
+     * to rewrite). For dynamic Homebrew PHP it pulls in the libxml2 /
+     * libicu / libsodium etc. chain so the bundle runs on a clean Mac. */
+    mac_make_bundle_portable(stage_dir, config ? config->verbose : 0);
+#endif
+
     return UB_SUCCESS;
 }
 
@@ -575,8 +1022,29 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         free(php_bin);
         return UB_ERROR_RUNTIME_NOT_FOUND;
     }
+
+    /* Static-PHP detection: builds from `static-php-cli` (which is what
+     * Laravel Herd ships on macOS) compile every extension into the
+     * `php` binary itself and report a leftover, non-existent
+     * `extension_dir` from `./configure --prefix=` (e.g. literally
+     * `/lib/php/extensions/no-debug-non-zts-<api>`). If the reported
+     * dir doesn't exist on disk, treat host PHP as statically linked:
+     * skip extension enumeration and ship the binary + ini as-is.
+     * `php -m` then surfaces every built-in module without us copying
+     * a single `.so`. This is the M1-D shape the docs promised — the
+     * binary IS already hermetic, we just have to stop fighting it. */
+    int static_php = 0;
+    {
+        struct stat ext_st;
+        if (stat(ext_dir_host, &ext_st) != 0 || !S_ISDIR(ext_st.st_mode)) {
+            static_php = 1;
+        }
+    }
+
     if (config && config->verbose) {
-        printf("Host PHP: %s\n  extension_dir: %s\n", php_bin, ext_dir_host);
+        printf("Host PHP: %s\n  extension_dir: %s%s\n",
+               php_bin, ext_dir_host,
+               static_php ? "  (not on disk — treating PHP as statically linked)" : "");
     }
 
     /* DEFAULT BUNDLING POLICY: copy ALL .so files from the host's
@@ -587,7 +1055,7 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
      * The user can `--exclude=ext-<name>` to drop noisy or oversized
      * extensions they don't want shipping. */
     php_ext_list_t exts = {0};
-    if (php_list_host_extensions(ext_dir_host, &exts) != 0) {
+    if (!static_php && php_list_host_extensions(ext_dir_host, &exts) != 0) {
         fprintf(stderr, "Error: could not enumerate host extension_dir %s\n", ext_dir_host);
         free(php_bin);
         return UB_ERROR_RUNTIME_NOT_FOUND;
@@ -608,25 +1076,44 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
 
     /* Cross-check declared vs host: any declared ext that's NOT on the
      * host AND not in the exclude list is a real build-blocker — emit the
-     * apt/dnf install hint and abort. */
+     * apt/dnf install hint and abort. For statically linked PHP (Herd,
+     * static-php-cli output) the host extension list is `php -m` rather
+     * than a directory scan, since the binary ships its modules baked
+     * in. */
+    php_ext_list_t loaded_mods = {0};
+    const php_ext_list_t* host_provided = &exts;
+    if (static_php) {
+        if (php_list_loaded_modules(php_bin, &loaded_mods) == 0) {
+            host_provided = &loaded_mods;
+        }
+    }
     int missing = 0;
     for (size_t i = 0; i < declared.count; i++) {
         const char* dname = declared.names[i];
         if (config && ub_ext_excluded((const char* const*)config->exclude,
                                       config->exclude_count, dname)) continue;
         int found = 0;
-        for (size_t j = 0; j < exts.count; j++) {
-            if (strcmp(exts.names[j], dname) == 0) { found = 1; break; }
+        for (size_t j = 0; j < host_provided->count; j++) {
+            if (strcmp(host_provided->names[j], dname) == 0) { found = 1; break; }
         }
         if (!found) {
-            fprintf(stderr,
-                    "Error: composer.json declares ext-%s but no %s/%s.so found in host extension_dir.\n"
-                    "       On Debian/Ubuntu: sudo apt install php-%s\n"
-                    "       On RHEL/Fedora:   sudo dnf install php-%s\n",
-                    dname, ext_dir_host, dname, dname, dname);
+            if (static_php) {
+                fprintf(stderr,
+                        "Error: composer.json declares ext-%s but `php -m` doesn't list it.\n"
+                        "       Host PHP appears statically linked (e.g. Laravel Herd, static-php-cli).\n"
+                        "       Use a PHP build that includes %s, or rebuild static-php-cli with `--with-%s`.\n",
+                        dname, dname, dname);
+            } else {
+                fprintf(stderr,
+                        "Error: composer.json declares ext-%s but no %s/%s.so found in host extension_dir.\n"
+                        "       On Debian/Ubuntu: sudo apt install php-%s\n"
+                        "       On RHEL/Fedora:   sudo dnf install php-%s\n",
+                        dname, ext_dir_host, dname, dname, dname);
+            }
             missing++;
         }
     }
+    php_ext_list_free(&loaded_mods);
     php_ext_list_free(&declared);
     if (missing > 0) {
         free(php_bin);
@@ -653,10 +1140,14 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         exts.count = write;
     }
 
-    printf("Bundling %zu host PHP extension%s from %s\n",
-           exts.count, exts.count == 1 ? "" : "s", ext_dir_host);
-    if (config && config->verbose) {
-        for (size_t i = 0; i < exts.count; i++) printf("  + %s\n", exts.names[i]);
+    if (static_php) {
+        printf("Bundling statically linked PHP (no loadable extensions to copy)\n");
+    } else {
+        printf("Bundling %zu host PHP extension%s from %s\n",
+               exts.count, exts.count == 1 ? "" : "s", ext_dir_host);
+        if (config && config->verbose) {
+            for (size_t i = 0; i < exts.count; i++) printf("  + %s\n", exts.names[i]);
+        }
     }
 
     /* Stage under XDG cache so hardlinks work. */

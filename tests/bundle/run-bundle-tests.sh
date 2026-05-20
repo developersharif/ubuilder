@@ -120,14 +120,14 @@ run_case() {
         return 0
     fi
 
-    # PHP M1-D synthesizes a runtime from the host's /usr/bin/php +
-    # extension_dir layout (Debian/RHEL/Arch style). Homebrew's Cellar
-    # layout on macOS isn't handled yet (documented limitation in
-    # CHANGELOG). Skip PHP cases on macOS until M1-D-macos lands.
-    if [[ "$rt" == "php" && "$(uname)" == "Darwin" ]]; then
-        warn "PHP bundle build is Linux-only in v2.x — Homebrew Cellar layout isn't yet supported; skipping"
-        return 0
-    fi
+    # PHP M1-D synthesizes a runtime from the host PHP + extension_dir
+    # layout. On Linux that means Debian/RHEL/Arch-style enumeration; on
+    # macOS the builder auto-detects statically linked host PHP (Laravel
+    # Herd, static-php-cli) and ships the binary as-is. Dynamic Homebrew
+    # PHP on macOS is still unsupported — its Cellar layout + Mach-O dyld
+    # rewiring of bundled dylibs are future work. If you're on macOS with
+    # dynamic Homebrew PHP, the bundle step will fail at extension_dir
+    # enumeration; that's expected until M1-D-macos-dynamic lands.
 
     mkdir -p "$case_work/build" "$run_dir"
 
@@ -180,6 +180,26 @@ run_case() {
 
     if (( rc == 0 )); then
         ok "exit code 0 and stdout matches expected.txt"
+    fi
+
+    # macOS portability assertion: walk every Mach-O in the extracted
+    # bundle tree and confirm every LC_LOAD_DYLIB reference is either
+    # system (/usr/lib, /System) or @executable_path-relative. Catches
+    # /opt/homebrew/... or /usr/local/... leakage that would break the
+    # bundle on a Mac without that path. Currently scoped to PHP because
+    # that's the runtime whose builder bundles host dylibs; Python/Node
+    # use vendored hermetic trees with @executable_path refs from upstream.
+    if (( rc == 0 )) && [[ "$rt" == "php" && "$(uname)" == "Darwin" ]]; then
+        local portcheck="$REPO_ROOT/tests/bundle/assert-macos-portable.sh"
+        if [[ -x "$portcheck" ]]; then
+            if ! "$portcheck" "$run_dir/app" >"$case_work/portcheck.log" 2>&1; then
+                fail "macOS portability check failed (see $case_work/portcheck.log)"
+                sed 's/^/    /' "$case_work/portcheck.log" | tail -n 20
+                rc=1
+            else
+                ok "all Mach-O refs are @executable_path-relative or system"
+            fi
+        fi
     fi
 
     # 5. Tamper test (S3 — Apple-sandbox integrity rule).
@@ -764,7 +784,7 @@ run_m1d_php_deps_case() {
 }
 
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "php" && "$(uname)" != "Darwin" ]]; then
+    if [[ "$rt" == "php" ]]; then
         run_m1d_php_deps_case || ((failures++))
         break
     fi
@@ -800,13 +820,20 @@ run_m1d_php_missing_ext_case() {
         sed 's/^/    /' "$cw/build.log" | tail -n 15
         rc=1
     fi
-    if ! grep -q "sudo apt install php-ubuilder_intentionally_missing" "$cw/build.log"; then
-        fail "build log missing the apt-install hint with package name"
+    # Install hint: Linux PHP host shows distro-specific apt + dnf lines;
+    # statically linked host PHP (e.g. Laravel Herd, static-php-cli) can't
+    # be fixed by apt-installing a `.so`, so the builder instead suggests
+    # rebuilding static-php-cli with the missing extension. Either shape
+    # is an acceptable hint as long as the missing ext name is named.
+    if grep -q "sudo apt install php-ubuilder_intentionally_missing" "$cw/build.log" \
+       && grep -q "sudo dnf install php-ubuilder_intentionally_missing" "$cw/build.log"; then
+        : # Linux-style hint present
+    elif grep -q "static-php-cli" "$cw/build.log" \
+         && grep -q "ubuilder_intentionally_missing" "$cw/build.log"; then
+        : # static-PHP-style hint present (macOS Herd, etc.)
+    else
+        fail "build log missing install hint for ext-ubuilder_intentionally_missing (expected apt/dnf or static-php-cli rebuild guidance)"
         sed 's/^/    /' "$cw/build.log" | tail -n 15
-        rc=1
-    fi
-    if ! grep -q "sudo dnf install php-ubuilder_intentionally_missing" "$cw/build.log"; then
-        fail "build log missing the dnf-install hint with package name"
         rc=1
     fi
     # Stage cleanup promise: the staging dir under XDG_CACHE_HOME / HOME
@@ -826,7 +853,7 @@ run_m1d_php_missing_ext_case() {
 }
 
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "php" && "$(uname)" != "Darwin" ]]; then
+    if [[ "$rt" == "php" ]]; then
         run_m1d_php_missing_ext_case || ((failures++))
         break
     fi
@@ -875,7 +902,7 @@ run_m1d_php_exclude_ext_case() {
 }
 
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "php" && "$(uname)" != "Darwin" ]]; then
+    if [[ "$rt" == "php" ]]; then
         run_m1d_php_exclude_ext_case || ((failures++))
         break
     fi
@@ -959,7 +986,7 @@ run_m1d_php_autoconfig_case() {
 }
 
 for rt in "${REQUESTED[@]}"; do
-    if [[ "$rt" == "php" && "$(uname)" != "Darwin" ]]; then
+    if [[ "$rt" == "php" ]]; then
         run_m1d_php_autoconfig_case || ((failures++))
         break
     fi

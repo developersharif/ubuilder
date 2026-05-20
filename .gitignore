@@ -93,3 +93,4 @@ env/
 .claude/
 .sandbox/
 CLAUDE.md
+.mcp.json
