@@ -26,6 +26,8 @@ add_library(ubuilder_core STATIC
     runtimes/install_cache.c
     runtimes/python_builder.c
     runtimes/php_builder.c
+    runtimes/php_static.c
+    runtimes/php_static.h
     runtimes/nodejs_builder.c
 )
 

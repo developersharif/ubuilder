@@ -5,6 +5,46 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.5.0] - 2026-05-21
+
+### Added
+
+- **Opt-in static-php-cli runtime for PHP bundles** (`--php-runtime=static`
+  / `"php_runtime": "static"` in `ubuilder.json`). When selected, ubuilder
+  downloads a curated static PHP build from its own GitHub releases
+  (currently PHP 8.4, FFI + GD + intl + the usual Laravel/Symfony
+  extensions) and uses it directly. Validated on filemanager-phpgui:
+  - Bundle size drops from ~422 MB to ~122 MB on a project with a 67 MB
+    vendor/ tree (Tcl/Tk dylibs for php-gui). Of that 122 MB, ~64 MB is
+    the static PHP binary itself; the remaining 58 MB is project + deps.
+  - For minimal apps with no native vendor deps, expect ~65–80 MB
+    bundles instead of ~280–400 MB.
+  - Downloaded binary is sha256-verified against `<asset>.sha256`
+    published alongside it; cached at
+    `$XDG_CACHE_HOME/ubuilder/runtimes/php/<minor>-<target>/`.
+  - Fully static — `otool -L` shows only `/usr/lib/*` and
+    `/System/*` deps; no Homebrew or Herd paths leak into the bundle,
+    so the result runs on any Mac without host PHP installed.
+- New `--php-runtime` CLI flag (`host` | `static`, default `host`).
+- New `"php_runtime"` config key in `ubuilder.json`.
+- New `.github/workflows/build-static-php.yml`: matrix-builds static
+  PHP via `spc build` for macOS arm64/x86_64 and Linux x86_64. Trigger
+  via workflow_dispatch (`php_version`, `release_tag`) or by pushing a
+  `static-php-v*` tag.
+
+### Fixed
+
+- `mac_rewrite_to_bundle` now batches every `install_name_tool -change`
+  pair (plus the optional `-id`) into a single invocation per Mach-O
+  instead of spawning N processes — reduces the per-file warning count
+  from ~12 to 1.
+- Both `install_name_tool` and `codesign` now run with stderr piped to
+  `/dev/null` via a local `posix_spawn` helper. The "will invalidate
+  the code signature" warning from install_name_tool and the "<path>:
+  replacing existing signature" line from codesign were correct but
+  misleading (we always `codesign --force` right after edits). Build
+  log for the macOS PHP runtime path drops from ~550 lines to ~4.
+
 ## [v2.4.3] - 2026-05-20
 
 ### Fixed

@@ -187,6 +187,35 @@ ubuilder                                # composer install runs in a staged copy
 
 PHP bundles built on **Linux** run on any target machine that has the same shared libraries the host PHP linked against (`libxml2`, `libssl`, `libsodium`, …) — for most servers this is a non-issue. PHP bundles built on **macOS** run on any Mac with no extra dependencies: the builder bundles every non-system dylib from the host PHP's transitive dep graph and rewrites Mach-O load commands to bundle-relative paths. See [Status](#status) for the libxml2 SONAME caveat that still applies on Linux.
 
+#### Smaller PHP bundles (`--php-runtime=static`)
+
+By default ubuilder uses the **host machine's PHP** and bundles every dylib it depends on. On macOS that means Homebrew/Herd PHP drags in ~50 libraries (libcurl + its HTTP/3 stack, libgd, libpq, libldap, …) and bundles balloon to ~280–400 MB.
+
+`--php-runtime=static` switches to a curated **static-php-cli** build that ubuilder ships and downloads on demand:
+
+```bash
+ubuilder --runtime=php --php-runtime=static     # ~50–80 MB minimal bundles
+```
+
+Or in `ubuilder.json`:
+
+```json
+{
+  "runtime": "php",
+  "entry_point": "index.php",
+  "php_runtime": "static"
+}
+```
+
+What you get:
+- PHP 8.4 with FFI, GD, intl, mbstring, openssl, curl, zip, phar, pdo_* (sqlite + mysql), sockets, sodium, opcache, and the usual Laravel/Symfony set.
+- One ~64 MB statically-linked PHP binary, downloaded once and cached at `$XDG_CACHE_HOME/ubuilder/runtimes/php/<minor>-<target>/`.
+- SHA256-verified against the `.sha256` published with each asset.
+
+Trade-offs:
+- Extension set is fixed (we don't run `spc build` on your machine). If `composer.json` requires an ext we don't compile in, ubuilder errors at build time with a clear message — drop the require, switch to `--php-runtime=host`, or open an issue.
+- Currently supports macOS (arm64, x86_64) and Linux x86_64. Other targets fall back to host PHP.
+
 ---
 
 ## Usage examples
@@ -320,6 +349,7 @@ The zero-flag path is the default. Pass these for non-default cases:
 | `--no-install-deps` | Skip `pip` / `npm` / `composer install` |
 | `--no-auto-vendor` | Don't auto-spawn `scripts/vendor-runtimes.sh` on cache miss |
 | `--exclude <pat>` (repeatable) | Drop a file glob, PHP ext, Python wheel, or Node module |
+| `--php-runtime <host\|static>` | PHP source: `host` (default, walks host PHP deps) or `static` (downloads curated static-php-cli build, ~50–80 MB bundles) |
 | `--self-update` | Download the latest ubuilder release and replace this binary |
 | `--verbose` / `-v` | Show every spawned subprocess |
 | `--version` / `-V` | Print the ubuilder version |

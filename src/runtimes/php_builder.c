@@ -1,5 +1,6 @@
 #include "runtime_builder.h"
 #include "runtime_embedder.h"
+#include "php_static.h"
 #include "../core/platform_compat.h"
 #include "../core/json_mini.h"
 #include "../core/glob_match.h"
@@ -1317,12 +1318,29 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
 
     /* Mode 2: synthesize a runtime tree from host PHP + composer ext-* deps.
      * This is the default path for `ubuilder` on PHP projects. */
-    char* php_bin = pc_path_lookup("php");
-    if (!php_bin) {
-        fprintf(stderr,
-                "Error: PHP not on PATH. Install php-cli, e.g.:\n"
-                "  sudo apt install php-cli\n");
-        return UB_ERROR_RUNTIME_NOT_FOUND;
+    char* php_bin = NULL;
+    if (config && config->php_runtime_static) {
+        /* v2.5.0: opt-in static-php-cli runtime. Downloads a curated
+         * static PHP from ubuilder's GitHub releases on first use,
+         * then reuses the cached binary on subsequent builds. */
+        ub_result_t sr = ub_php_static_resolve("8.4",
+                                               config->verbose,
+                                               &php_bin);
+        if (sr != UB_SUCCESS) {
+            /* ub_php_static_resolve printed a specific error already. */
+            return sr;
+        }
+    } else {
+        php_bin = pc_path_lookup("php");
+        if (!php_bin) {
+            fprintf(stderr,
+                    "Error: PHP not on PATH. Install php-cli, e.g.:\n"
+                    "  sudo apt install php-cli\n"
+                    "  brew install php\n"
+                    "Or pass --php-runtime=static to download a curated\n"
+                    "static PHP from ubuilder's GitHub releases.\n");
+            return UB_ERROR_RUNTIME_NOT_FOUND;
+        }
     }
 
     char ext_dir_host[1024];
@@ -1430,7 +1448,19 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
             if (strcmp(host_provided->names[j], dname) == 0) { found = 1; break; }
         }
         if (!found) {
-            if (static_php) {
+            if (config && config->php_runtime_static) {
+                /* User opted in to ubuilder's curated static PHP; we
+                 * (the ubuilder maintainers) own the extension set. */
+                fprintf(stderr,
+                        "Error: composer.json declares ext-%s but the curated static PHP\n"
+                        "       (--php-runtime=static) doesn't include it.\n"
+                        "       Either:\n"
+                        "         - drop ext-%s from composer.json's `require`, or\n"
+                        "         - use --php-runtime=host instead (uses the host's PHP), or\n"
+                        "         - open an issue requesting ext-%s in the default static build:\n"
+                        "           https://github.com/developersharif/ubuilder/issues\n",
+                        dname, dname, dname);
+            } else if (static_php) {
                 fprintf(stderr,
                         "Error: composer.json declares ext-%s but `php -m` doesn't list it.\n"
                         "       Host PHP appears statically linked (e.g. Laravel Herd, static-php-cli).\n"
