@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(UBuilder VERSION 2.4.0 LANGUAGES C CXX)
+project(UBuilder VERSION 2.4.1 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
