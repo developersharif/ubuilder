@@ -5,6 +5,36 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.4.3] - 2026-05-20
+
+### Fixed
+
+- **macOS PHP composer install vs. broken host directives:** when the
+  host PHP's main `php.ini` had a stale `auto_prepend_file=` pointing
+  at an uninstalled Herd/Valet helper (e.g.
+  `/Applications/Herd.app/Contents/Resources/valet/dump-loader.php`),
+  `composer install` aborted with `PHP Fatal error: Failed opening
+  required '…/dump-loader.php'` and ubuilder failed the bundle build
+  with `composer install failed (exit 255)`. We can't pass `-d` flags
+  to composer because the binary may be a shell wrapper, so the fix
+  layers a temp scan-dir override file (`zz-ubuilder-neutralize.ini`)
+  that empties `auto_prepend_file`, `auto_append_file`, and sets
+  `display_startup_errors=Off`. The override dir is appended to
+  `PHP_INI_SCAN_DIR=<host-scan-dir>:<our-override-dir>` for the
+  composer child so the host's own conf.d still loads extensions
+  while our directives win on the directives that matter. The user's
+  host config is otherwise untouched.
+- **PHP 8.5 `--ini` probe regression** (latent since v2.4.2): the
+  v2.4.2 probe passed `-d display_errors=stderr -d
+  display_startup_errors=Off --ini` to silence stdout noise, but PHP
+  8.5 rejects ANY argument alongside `--ini` with `"Unknown argument
+  for --ini"`, so the probe failed silently and returned empty paths.
+  Removed the `-d` flags from the `--ini` invocation specifically;
+  other probes (`-r`, `-m`) keep them. The 16 KiB capture buffer
+  comfortably tolerates a few KB of PHP warning noise on stdout, and
+  the parser keys off distinctive labels so interleaved warnings are
+  ignored.
+
 ## [v2.4.2] - 2026-05-20
 
 ### Fixed

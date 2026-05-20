@@ -243,10 +243,15 @@ static int php_probe_ini_paths(const char* php_bin,
     if (main_cap) main_ini[0] = 0;
     if (scan_cap) scan_dir[0] = 0;
 
+    /* PHP 8.5 rejects ANY other args alongside `--ini` with
+     * "Unknown argument for --ini" — so we cannot pre-set `-d
+     * display_errors=stderr` here to silence startup noise. The labels
+     * we scan for ("Loaded Configuration File:", "Scan for additional
+     * .ini files in:") are distinctive enough that interleaved PHP
+     * warnings on stdout still get ignored by the parser; the 16 KiB
+     * capture comfortably accommodates a few KB of warning text. */
     char* argv[] = {
         (char*)php_bin,
-        (char*)"-d", (char*)"display_errors=stderr",
-        (char*)"-d", (char*)"display_startup_errors=Off",
         (char*)"--ini",
         NULL
     };
@@ -2001,6 +2006,61 @@ static ub_result_t php_maybe_stage_project_with_deps(const ub_config_t* config,
         printf("  composer: %s\n", composer);
     }
 
+    /* Neutralize host PHP directives that commonly break composer when
+     * the host config references defunct paths (e.g., stale
+     * `auto_prepend_file` pointing at an uninstalled Herd/Valet helper,
+     * or `extension=` lines for since-deleted .so files). We can't pass
+     * `-d` flags to composer's PHP child (the binary may be a shell
+     * wrapper), but PHP_INI_SCAN_DIR is honored regardless: PHP loads
+     * every `*.ini` in those dirs after the main php.ini, so a file
+     * with the same key wins.
+     *
+     * Setting PHP_INI_SCAN_DIR REPLACES the compile-time scan dir, so
+     * we must include the host's own scan dir first (otherwise its
+     * conf.d extensions stop loading). Our dir is appended last so its
+     * `zz-*.ini` file is processed after host conf.d and overrides. */
+    char host_scan_dir[1024] = {0};
+    char host_main_ini[1024] = {0};
+    php_probe_ini_paths(php_bin, host_main_ini, sizeof(host_main_ini),
+                        host_scan_dir, sizeof(host_scan_dir));
+
+    char ini_override_dir[1280];
+    snprintf(ini_override_dir, sizeof(ini_override_dir),
+             "%s/.ubuilder-ini-overrides", stage);
+    pc_mkdir_p(ini_override_dir);
+
+    char ini_override_file[1400];
+    snprintf(ini_override_file, sizeof(ini_override_file),
+             "%s/zz-ubuilder-neutralize.ini", ini_override_dir);
+    FILE* ovf = fopen(ini_override_file, "w");
+    if (ovf) {
+        fputs("; ubuilder: neutralize host PHP directives that can break\n", ovf);
+        fputs("; composer install (stale auto_prepend_file pointing at\n", ovf);
+        fputs("; uninstalled Herd/Valet helpers, noisy startup errors).\n", ovf);
+        fputs("auto_prepend_file =\n", ovf);
+        fputs("auto_append_file =\n", ovf);
+        fputs("display_errors = stderr\n", ovf);
+        fputs("display_startup_errors = Off\n", ovf);
+        fclose(ovf);
+    }
+
+    char scan_env_val[2600];
+    if (host_scan_dir[0]) {
+#ifdef _WIN32
+        snprintf(scan_env_val, sizeof(scan_env_val),
+                 "PHP_INI_SCAN_DIR=%s;%s", host_scan_dir, ini_override_dir);
+#else
+        snprintf(scan_env_val, sizeof(scan_env_val),
+                 "PHP_INI_SCAN_DIR=%s:%s", host_scan_dir, ini_override_dir);
+#endif
+    } else {
+        snprintf(scan_env_val, sizeof(scan_env_val),
+                 "PHP_INI_SCAN_DIR=%s", ini_override_dir);
+    }
+    if (config->verbose) {
+        printf("  %s\n", scan_env_val);
+    }
+
     /* Build argv dynamically — for each --excluded `ext-<name>` we ALSO
      * need to pass --ignore-platform-req=ext-<name> so composer doesn't
      * abort over the missing platform requirement. */
@@ -2050,7 +2110,11 @@ static ub_result_t php_maybe_stage_project_with_deps(const ub_config_t* config,
     }
     argv[a] = NULL;
 
-    int rc = pc_spawn_and_wait(composer, argv, NULL, stage);
+    char* env_extras[] = { scan_env_val, NULL };
+    char** spawn_env = pc_env_overlay(env_extras);
+    int rc = pc_spawn_and_wait(composer, argv,
+                               spawn_env ? spawn_env : NULL, stage);
+    if (spawn_env) pc_env_free(spawn_env);
     for (size_t i = 0; i < tf; i++) free(to_free[i]);
     free(to_free);
     free(argv);
