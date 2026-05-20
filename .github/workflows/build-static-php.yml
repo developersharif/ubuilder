@@ -1,0 +1,174 @@
+name: Build Static PHP
+
+# Builds static PHP binaries (via static-php-cli) for ubuilder's opt-in
+# --php-runtime=static mode. Output goes to a GitHub release tagged
+# `static-php-vX.Y.Z` so the ubuilder CLI can download them on demand.
+#
+# Trigger:
+#   - workflow_dispatch (manual): pick a PHP version and an optional
+#     extension override; runs the matrix and uploads to a draft release.
+#   - push tag matching `static-php-v*`: same matrix, attaches to the
+#     existing tag.
+#
+# Why a dedicated workflow:
+#   The host ubuilder CI (release.yml) builds the ubuilder binary itself
+#   on every version bump. Static PHP builds take 30-60 min per run and
+#   change rarely, so we keep them separate and version them independently.
+
+on:
+  workflow_dispatch:
+    inputs:
+      php_version:
+        description: 'PHP version (e.g. 8.4, 8.3)'
+        required: true
+        default: '8.4'
+        type: string
+      extensions:
+        description: 'Extension set (comma-separated, no spaces). Leave blank for default.'
+        required: false
+        default: ''
+        type: string
+      release_tag:
+        description: 'Release tag to attach assets to (e.g. static-php-v8.4.0). Created as draft if it does not exist.'
+        required: true
+        type: string
+  push:
+    tags:
+      - 'static-php-v*'
+
+permissions:
+  contents: write
+
+env:
+  # Default extension set. Covers Laravel/Symfony + common needs, plus
+  # FFI (required for php-gui Tcl/Tk bindings, e.g. filemanager-phpgui)
+  # and GD/intl which O6lvl4 and other community builds typically omit.
+  DEFAULT_EXTENSIONS: "bcmath,calendar,ctype,curl,dom,ffi,fileinfo,filter,gd,iconv,intl,mbstring,opcache,openssl,pdo,pdo_mysql,pdo_sqlite,phar,posix,readline,session,simplexml,sockets,sodium,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: macos-arm64
+            triple: aarch64-apple-darwin
+          - os: macos-13
+            target: macos-x86_64
+            triple: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: linux-x86_64
+            triple: x86_64-unknown-linux-musl
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout ubuilder (for tag context)
+        uses: actions/checkout@v4
+
+      - name: Resolve build inputs
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            PHP_VER="${{ github.event.inputs.php_version }}"
+            EXTS="${{ github.event.inputs.extensions }}"
+            REL_TAG="${{ github.event.inputs.release_tag }}"
+          else
+            # Tag push: static-php-v<phpver>(-<suffix>)? — extract phpver
+            REL_TAG="${GITHUB_REF#refs/tags/}"
+            PHP_VER=$(echo "$REL_TAG" | sed -E 's/^static-php-v([0-9]+\.[0-9]+).*/\1/')
+            EXTS=""
+          fi
+          if [[ -z "$EXTS" ]]; then EXTS="$DEFAULT_EXTENSIONS"; fi
+          echo "php_version=$PHP_VER"  >> "$GITHUB_OUTPUT"
+          echo "extensions=$EXTS"      >> "$GITHUB_OUTPUT"
+          echo "release_tag=$REL_TAG"  >> "$GITHUB_OUTPUT"
+          echo "PHP version:  $PHP_VER"
+          echo "Extensions:   $EXTS"
+          echo "Release tag:  $REL_TAG"
+
+      - name: Download spc binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            macos-arm64)   SPC_URL="https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-macos-aarch64" ;;
+            macos-x86_64)  SPC_URL="https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-macos-x86_64" ;;
+            linux-x86_64)  SPC_URL="https://dl.static-php.dev/static-php-cli/spc-bin/nightly/spc-linux-x86_64" ;;
+            *) echo "Unsupported target: ${{ matrix.target }}"; exit 1 ;;
+          esac
+          mkdir -p spc-work && cd spc-work
+          curl -fsSL -o spc "$SPC_URL"
+          chmod +x spc
+          ./spc --version
+
+      - name: spc doctor
+        run: |
+          cd spc-work
+          # --auto-fix installs missing system tools (perl, autoconf, etc.).
+          # Some Linux packages need sudo; spc handles that internally.
+          ./spc doctor --auto-fix || true
+          ./spc doctor
+
+      - name: spc download sources
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd spc-work
+          ./spc download \
+            --with-php=${{ steps.inputs.outputs.php_version }} \
+            --for-extensions="${{ steps.inputs.outputs.extensions }}" \
+            --prefer-pre-built
+
+      - name: spc build
+        run: |
+          cd spc-work
+          ./spc build "${{ steps.inputs.outputs.extensions }}" --build-cli
+
+      - name: Verify build output
+        run: |
+          cd spc-work
+          ls -la buildroot/bin/
+          file buildroot/bin/php
+          ./buildroot/bin/php -v
+          echo "--- compiled-in extensions ---"
+          ./buildroot/bin/php -m
+
+      - name: Package tarball
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHP_FULL_VER=$(./spc-work/buildroot/bin/php -r 'echo PHP_VERSION;')
+          ASSET="ubuilder-static-php-${PHP_FULL_VER}-${{ matrix.target }}.tar.gz"
+          tar -C spc-work/buildroot/bin -czf "$ASSET" php
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          echo "asset=$ASSET"           >> "$GITHUB_OUTPUT"
+          echo "asset_sha=$ASSET.sha256" >> "$GITHUB_OUTPUT"
+          echo "php_full_version=$PHP_FULL_VER" >> "$GITHUB_OUTPUT"
+          ls -la "$ASSET" "$ASSET.sha256"
+
+      - name: Upload to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.inputs.outputs.release_tag }}
+          name: Static PHP ${{ steps.pkg.outputs.php_full_version }}
+          draft: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.pkg.outputs.asset }}
+            ${{ steps.pkg.outputs.asset_sha }}
+          body: |
+            Static PHP binaries for ubuilder's `--php-runtime=static` mode.
+
+            Built with [static-php-cli](https://github.com/crazywhalecc/static-php-cli).
+
+            **PHP version:** ${{ steps.pkg.outputs.php_full_version }}
+            **Extensions:** ${{ steps.inputs.outputs.extensions }}
+
+            See `<asset>.sha256` for checksums.

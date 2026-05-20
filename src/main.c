@@ -29,6 +29,7 @@ static struct option long_options[] = {
     {"no-auto-vendor",    no_argument,       0,  5 },
     {"exclude",           required_argument, 0,  6 },
     {"self-update",       no_argument,       0,  7 },
+    {"php-runtime",       required_argument, 0,  8 },
     {"gui",               no_argument,       0, 'g'},
     {"verbose",     no_argument,       0, 'v'},
     {"help",        no_argument,       0, 'h'},
@@ -165,6 +166,26 @@ static ub_result_t fill_defaults(ub_config_t* config) {
     return UB_SUCCESS;
 }
 
+/* Parse --php-runtime / "php_runtime" value. Sets cfg->php_runtime_static
+ * and the presence bit. Returns 0 on success, -1 on invalid value. */
+static int set_php_runtime(ub_config_t* cfg, ub_cli_presence_t* presence,
+                           const char* value) {
+    if (!value || !*value) {
+        fprintf(stderr, "Error: --php-runtime requires \"host\" or \"static\"\n");
+        return -1;
+    }
+    if (strcmp(value, "static") == 0) {
+        cfg->php_runtime_static = 1;
+    } else if (strcmp(value, "host") == 0) {
+        cfg->php_runtime_static = 0;
+    } else {
+        fprintf(stderr, "Error: --php-runtime must be \"host\" or \"static\" (got \"%s\")\n", value);
+        return -1;
+    }
+    presence->php_runtime_static = 1;
+    return 0;
+}
+
 /* Append one --exclude argument to config->exclude. Bumps presence so the
  * config-file layer knows to merge rather than overwrite. */
 static int append_exclude(ub_config_t* config, ub_cli_presence_t* presence,
@@ -214,6 +235,10 @@ static void print_usage(const char* program_name) {
     printf("      --self-update         Download and install the latest release of ubuilder itself.\n");
     printf("                            Replaces the running binary in place; needs write\n");
     printf("                            permission on its own path (use sudo for /usr/local/bin).\n");
+    printf("      --php-runtime MODE    PHP runtime source. \"host\" (default) walks the host's\n");
+    printf("                            php binary's deps; \"static\" downloads a curated static\n");
+    printf("                            build from ubuilder's releases (~50 MB bundles vs ~400 MB).\n");
+    printf("                            Only meaningful when --runtime=php.\n");
     printf("  -g, --gui                 Enable GUI support\n");
     printf("  -v, --verbose             Enable verbose output\n");
     printf("  -h, --help                Show this help message\n");
@@ -306,6 +331,11 @@ static ub_result_t parse_arguments(int argc, char* argv[],
             /* Short-circuit: do the update and exit before any build flow. */
             int rc = ub_self_update_run();
             exit(rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+        } else if (strcmp(arg, "--php-runtime") == 0) {
+            if (i + 1 >= argc) { fprintf(stderr, "Error: --php-runtime requires an argument\n"); return UB_ERROR_INVALID_ARGS; }
+            if (set_php_runtime(config, presence, argv[++i]) != 0) return UB_ERROR_INVALID_ARGS;
+        } else if (strncmp(arg, "--php-runtime=", 14) == 0) {
+            if (set_php_runtime(config, presence, arg + 14) != 0) return UB_ERROR_INVALID_ARGS;
         } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
             presence->gui = 1;
@@ -374,6 +404,10 @@ static ub_result_t parse_arguments(int argc, char* argv[],
             case 7: /* --self-update */
                 /* Short-circuit before any build setup. */
                 exit(ub_self_update_run() == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+            case 8: /* --php-runtime */
+                if (set_php_runtime(config, presence, optarg) != 0)
+                    return UB_ERROR_INVALID_ARGS;
+                break;
             case 'g':
                 config->enable_gui = 1;
                 presence->gui = 1;

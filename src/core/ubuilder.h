@@ -93,6 +93,18 @@ typedef struct {
      * Set to 1 ("console": true in ubuilder.json) to keep the console —
      * useful for CLI tools or debugging. On non-Windows this field is ignored. */
     int   console_window;
+    /* v2.5.0: PHP runtime source selection.
+     *   UB_PHP_RT_HOST   (default): use the host's installed `php` binary;
+     *     walk its .dylib deps and bundle everything. Works with any host
+     *     setup (Homebrew, Herd, system PHP) but produces large bundles
+     *     on macOS because Homebrew PHP links ~50 dylibs at build time.
+     *   UB_PHP_RT_STATIC: download a curated static-php-cli build from
+     *     ubuilder's GitHub releases, use it directly. ~50 MB bundles,
+     *     fully self-contained. Extensions limited to the set we compile
+     *     in (see .github/workflows/build-static-php.yml).
+     * Set by --php-runtime=host|static or "php_runtime" in ubuilder.json.
+     * Only consulted when runtime == UB_RUNTIME_PHP. */
+    int php_runtime_static;
     /* Glob patterns and/or `ext-<name>` tokens to omit from the bundle.
      * Applied in two places:
      *   - app file recursion (every runtime): paths matching any pattern

@@ -88,6 +88,7 @@ static const char* KNOWN_ROOT_KEYS[] = {
     "schema_version", "name", "runtime", "entry_point", "output",
     "include", "exclude", "verbose", "gui", "compression", "console",
     "runtime_options", "build",
+    "php_runtime",
     NULL
 };
 
@@ -473,6 +474,29 @@ ub_result_t ub_config_apply(const ub_config_file_t*  file,
                     if (!s) return UB_ERROR_MEMORY_ALLOCATION;
                     cfg->exclude[cfg->exclude_count++] = s;
                 }
+            }
+        }
+    }
+
+    /* v2.5.0: php_runtime — "host" (default) | "static". Only meaningful
+     * when runtime == "php"; ignored otherwise (no warning, since you
+     * might run the same ubuilder.json against different runtimes). */
+    if (!presence->php_runtime_static) {
+        const json_value_t* v = json_obj_get(file->root, "php_runtime");
+        if (v) {
+            if (v->type != JSON_STRING) {
+                fprintf(stderr, "%s:%d:%d: \"php_runtime\" must be a string (\"host\" or \"static\")\n",
+                        file->path, v->line, v->col);
+                return UB_ERROR_INVALID_ARGS;
+            }
+            if (strcmp(v->v.str.s, "static") == 0) {
+                cfg->php_runtime_static = 1;
+            } else if (strcmp(v->v.str.s, "host") == 0) {
+                cfg->php_runtime_static = 0;
+            } else {
+                fprintf(stderr, "%s:%d:%d: \"php_runtime\" must be \"host\" or \"static\" (got \"%s\")\n",
+                        file->path, v->line, v->col, v->v.str.s);
+                return UB_ERROR_INVALID_ARGS;
             }
         }
     }
