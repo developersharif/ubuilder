@@ -192,9 +192,15 @@ run_case() {
     if (( rc == 0 )) && [[ "$rt" == "php" && "$(uname)" == "Darwin" ]]; then
         local portcheck="$REPO_ROOT/tests/bundle/assert-macos-portable.sh"
         if [[ -x "$portcheck" ]]; then
-            if ! "$portcheck" "$run_dir/app" >"$case_work/portcheck.log" 2>&1; then
+            # PORTCHECK_VERBOSE=1 ensures the scan emits a [scan] line per
+            # Mach-O so when CI fails we can see how far the script got.
+            if ! PORTCHECK_VERBOSE=1 "$portcheck" "$run_dir/app" >"$case_work/portcheck.log" 2>&1; then
                 fail "macOS portability check failed (see $case_work/portcheck.log)"
-                sed 's/^/    /' "$case_work/portcheck.log" | tail -n 20
+                echo "    --- portcheck.log size $(wc -c < "$case_work/portcheck.log" 2>/dev/null || echo '?') bytes ---"
+                # cat (not tail) — these CI failures keep showing empty
+                # tails. Show the whole thing so we stop guessing.
+                sed 's/^/    /' "$case_work/portcheck.log"
+                echo "    --- end portcheck.log ---"
                 rc=1
             else
                 ok "all Mach-O refs are @executable_path-relative or system"

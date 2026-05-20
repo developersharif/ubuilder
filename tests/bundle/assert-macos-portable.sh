@@ -49,22 +49,26 @@ trap 'rm -rf "$WORK"' EXIT
 # (cli) we snapshot the temp dir before cleanup; if it stays running
 # (gui) we kill it.
 LOG="$WORK/run.log"
+echo "[port-check] starting bundle $BUNDLE, TMPDIR=${TMPDIR:-(unset)}"
 "$BUNDLE" >"$LOG" 2>&1 &
 PID=$!
+echo "[port-check] launched PID=$PID"
 EXTRACT=""
 # Search wherever mkdtemp may have placed the launcher's extract dir.
 # - $TMPDIR honored on macOS, GH Actions sets a runner-specific path.
 # - /var/folders/*/*/T/ is the default user temp on macOS (M-series + Intel).
 # - /tmp is the POSIX fallback the launcher uses when neither of the above
 #   are usable.
+# Use :- defaults so an unset TMPDIR doesn't trigger set -u.
 for i in $(seq 1 50); do
     sleep 0.1
-    EXTRACT="$(ls -dt "${TMPDIR%/}/ubuilder-${PID}" \
+    EXTRACT="$(ls -dt "${TMPDIR:-/tmp}/ubuilder-${PID}" \
                        /var/folders/*/*/T/ubuilder-${PID} \
                        /tmp/ubuilder-${PID} \
                        2>/dev/null | head -1 || true)"
     [[ -n "$EXTRACT" && -d "$EXTRACT/runtime/bin" ]] && break
 done
+echo "[port-check] EXTRACT=${EXTRACT:-(not found)}"
 # Wait for extraction to stabilize: poll until the total file count
 # stops growing for two consecutive 200ms ticks. Bundles with FFI-loaded
 # user dylibs (php-gui Tcl/Tk, etc.) finish extracting just before the
