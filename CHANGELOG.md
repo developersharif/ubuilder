@@ -5,6 +5,70 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-05-20
+
+### Added
+
+- **`console` config key (Windows):** controls whether the output `.exe` opens
+  a console window. Default is `false` — GUI apps (php-gui, Tk, tray tools)
+  run silently with no terminal. Set `"console": true` for CLI tools so
+  stdout/stderr remain visible. Implemented by patching the PE optional-header
+  subsystem field (CUI ↔ GUI) after the template copy; Linux/macOS unaffected.
+- **`CREATE_NO_WINDOW` for child processes (Windows):** when the launcher runs
+  as a GUI-subsystem executable (no attached console), child processes — php.exe,
+  node.exe, python.exe — are spawned with `CREATE_NO_WINDOW` so they don't
+  briefly flash a terminal. Detection uses `GetConsoleWindow() == NULL`.
+- **`--runtime-source` / `runtime_options.python.source` on Windows:** the
+  Python builder now honors an explicit source path on Windows before falling
+  back to host probe. Needed because the Windows App Store Python stub
+  (`WindowsApps\python.exe`) causes auto-detection to fail (stub has size 0).
+  Pass the directory of your real Python installation.
+
+### Fixed
+
+- **Windows `ftell()` in append mode (PHP/Python/Node builds):** MSVC's `ftell()`
+  on `"ab"` mode files does not return the true file position after writes.
+  Two occurrences fixed in `create_modular_executable()`:
+  - `data_start_offset` now uses `_filelength(_fileno(fp))` **before** any writes.
+  - `payload_end` now uses `fflush()` + `GetFileSizeEx()` via raw HANDLE **after**
+    writes, bypassing the broken `_lseek(SEEK_CUR)` path inside `_filelength`.
+  Previously produced "Error: Inconsistent payload bounds" on every Windows build.
+- **Windows PHP flat layout (`extension_dir`):** the launcher passed the wrong
+  path for `-d extension_dir` — it stripped one directory level to find `ext\`
+  but PHP on Windows uses a flat layout (`<temp>\ext\`, not `<temp>\bin\..\ext\`).
+  Fixed to use `runtime_dir` directly on Windows.
+- **Windows PHP `ffi.enable`:** added `-d ffi.enable=true` to the PHP launcher
+  argv on Windows (was already set on POSIX). Required for FFI-based GUI apps
+  (php-gui / Tcl/Tk via FFI).
+- **Windows PHP recursive embed bundling itself:** `php_embed_files_recursive`
+  on Windows lacked `ub_path_excluded()` calls, so a previously built `.exe`
+  in the project directory was embedded into the next build, producing 8 GB+
+  outputs. Added exclusion checks matching the POSIX branch.
+- **Tcl/Tk script libraries not bundled (Windows PHP):** the Windows embed had
+  an extension whitelist that excluded `.tcl` files. `Tcl_Init()` requires
+  `tcl8.6/init.tcl` and related `.tcl` scripts from the Tcl installation tree.
+  Removed the whitelist; all files are now bundled (matching POSIX behavior).
+- **`PHP_INI_SCAN_DIR` on Windows:** set to empty string to suppress scanning
+  of the host system's `conf.d` directory, preventing host extensions from
+  bleeding into the bundle.
+
+### Changed
+
+- Default output executable on Windows suppresses the console window. Projects
+  that relied on the old behavior (always CUI) must add `"console": true` to
+  their `ubuilder.json`.
+
+### Documentation
+
+- `README.md`: added `console` to the full schema block; added explanation table
+  (GUI default vs CLI opt-in); added cross-reference note in the CLI flags table.
+- `docs/internals/architecture/CONFIG_FILE_SPEC.md`: added `console` to honored
+  keys list, key semantics table, and CLI ↔ config precedence table.
+- `docs/user/cli-reference.md`: added `console` reference section with behavior
+  table and examples.
+- `docs/user/troubleshooting.md`: added Windows entries for console window
+  flashing and Python auto-detection failure (Microsoft Store stub).
+
 ## [2.2.0] - 2026-05-19
 
 ### Added
