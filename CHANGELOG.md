@@ -5,6 +5,42 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **macOS PHP build vs. Homebrew layout (regression in v2.4.0):**
+  bundles built against `/opt/homebrew/bin/php` failed in CI with
+  `failed to copy host php.ini ("/opt/homebrew/etc/php/8.5/php.ini" -> ...)`.
+  Four bugs combined:
+  - **PHP 8.5 quotes `--ini` output paths** (`Loaded Configuration File: "..."`).
+    The parser now strips a surrounding pair of double quotes so paths
+    round-trip into `fopen`.
+  - **`extension_dir` probe was clearing the value via `-d extension_dir=`**,
+    which returned PHP's compile-time default (a Cellar path that
+    doesn't exist) instead of the host's runtime-configured value.
+    Removed the override.
+  - **Static-PHP detection was too narrow:** Homebrew's `extension_dir`
+    exists but is *empty* (every module is compiled into the binary),
+    so the directory-exists check incorrectly classified Homebrew as
+    dynamic. Now also treats an empty `.so`-less extension_dir as
+    static.
+  - **Symlinked Homebrew dylibs were preserved as relative symlinks
+    in the stage** (`/opt/homebrew/bin/php` → `../Cellar/php/...`),
+    dangling once extracted. Resolved through `realpath()` before
+    staging both the PHP binary and every transitively-bundled dylib.
+- **macOS dyld walker now resolves `@rpath/` deps** by parsing
+  `LC_RPATH` from `otool -l` output and trying each rpath substitution
+  until one exists on disk. Without this, deps like
+  `@rpath/libbrotlicommon.1.dylib` (from libbrotlidec) were silently
+  dropped from the bundle. The rewrite pass additionally rewrites
+  `@rpath/X` refs in every bundled Mach-O to `@executable_path/../lib/X`
+  so the resulting bundle is rpath-independent.
+- **Host `php.ini` copy is now best-effort:** if PHP reports a path
+  that isn't readable (fresh Homebrew installs ship `php.ini-development`
+  but not `php.ini`), we write a placeholder and let `conf.d/` carry
+  the active config instead of failing the build.
+
 ## [v2.4.0] - 2026-05-20
 
 ### Added

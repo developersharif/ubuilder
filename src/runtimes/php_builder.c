@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/stat.h>
 
 #ifdef PLATFORM_WINDOWS
@@ -267,6 +268,13 @@ static int php_probe_ini_paths(const char* php_bin,
             char* end = p + strlen(p);
             while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
             *end = 0;
+            /* PHP 8.5 wraps these paths in double quotes (e.g.
+             * `"/opt/homebrew/etc/php/8.5/php.ini"`). Strip a surrounding
+             * pair so the path round-trips into fopen() / opendir(). */
+            if (end > p + 1 && *p == '"' && end[-1] == '"') {
+                end[-1] = 0;
+                p++;
+            }
             if (strcmp(p, "(none)") != 0 && strlen(p) < caps[i] && caps[i] > 0) {
                 memcpy(outs[i], p, strlen(p) + 1);
             }
@@ -387,11 +395,18 @@ static int php_list_loaded_modules(const char* php_bin, php_ext_list_t* out) {
     return 0;
 }
 
-/* Probe `<php_bin> -r 'echo ini_get("extension_dir");'`. Returns 0 / -1. */
+/* Probe `<php_bin> -r 'echo ini_get("extension_dir");'`. Returns 0 / -1.
+ *
+ * NOTE: do NOT pass `-d extension_dir=` to clear the value first — that
+ * would return PHP's compile-time default, which on Homebrew points at
+ * `/opt/homebrew/Cellar/php/<ver>/lib/php/<api>/` (a path that doesn't
+ * exist on disk; Homebrew's pecl extensions actually live at
+ * `/opt/homebrew/lib/php/pecl/<api>/`, configured via the host php.ini).
+ * Asking PHP without the override returns the runtime-effective value
+ * the host's php.ini actually loads from. */
 static int php_probe_extension_dir(const char* php_bin, char* out, size_t out_cap) {
     char* argv[] = {
         (char*)php_bin,
-        (char*)"-d", (char*)"extension_dir=",  /* Block auto-load — just want the default. */
         (char*)"-r", (char*)"echo ini_get(\"extension_dir\");",
         NULL
     };
@@ -561,99 +576,213 @@ static int mac_otool_deps(const char* mach_o_path, mac_strs_t* out) {
     return 0;
 }
 
-/* Resolve @loader_path/foo and @executable_path/foo against the
- * referrer's containing directory. Absolute paths pass through. @rpath
- * refs return -1 (caller treats as best-effort skip). Caller frees *out. */
-static int mac_resolve_ref(const char* referrer, const char* ref, char** out) {
+/* Parse LC_RPATH load commands from `otool -l <mach_o>` output and
+ * return each rpath in load order. Caller frees with mac_strs_free.
+ * Returns 0 on success, -1 on probe failure.
+ *
+ * Sample output we parse:
+ *     Load command 18
+ *           cmd LC_RPATH
+ *       cmdsize 56
+ *          path /opt/homebrew/opt/openssl 3/lib (offset 12)
+ */
+static int mac_parse_rpaths(const char* mach_o, mac_strs_t* out) {
+    char* otool = pc_path_lookup("otool");
+    if (!otool) return -1;
+    char* argv[] = { otool, (char*)"-l", (char*)mach_o, NULL };
+    char* captured = NULL;
+    int rc = pc_spawn_capture(otool, argv, NULL, NULL, 1024 * 1024, &captured);
+    free(otool);
+    if (rc != 0 || !captured) { free(captured); return -1; }
+
+    int in_rpath = 0;
+    char* save = NULL;
+    for (char* line = strtok_r(captured, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        if (strstr(line, "cmd LC_RPATH")) { in_rpath = 1; continue; }
+        if (!in_rpath) continue;
+        char* hit = strstr(line, "path ");
+        if (!hit) continue;
+        char* p = hit + 5;
+        while (*p == ' ' || *p == '\t') p++;
+        char* paren = strstr(p, " (offset");
+        if (paren) *paren = 0;
+        char* end = p + strlen(p);
+        while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) end--;
+        *end = 0;
+        if (*p) mac_strs_push(out, p);
+        in_rpath = 0;
+    }
+    free(captured);
+    return 0;
+}
+
+/* Resolve @loader_path / @executable_path / @rpath references. For
+ * @rpath, walks the rpaths list and returns the first substitution
+ * that exists on disk. Caller frees *out. Returns 0 / -1. */
+static int mac_resolve_ref(const char* referrer, const char* ref,
+                           const mac_strs_t* rpaths, char** out) {
     *out = NULL;
     if (ref[0] != '@') {
         *out = strdup(ref);
         return *out ? 0 : -1;
     }
-    const char* tail = NULL;
-    if (strncmp(ref, "@loader_path/", 13) == 0)         tail = ref + 13;
-    else if (strncmp(ref, "@executable_path/", 17) == 0) tail = ref + 17;
-    else return -1;  /* @rpath, etc. */
 
-    char dir[1024];
-    size_t rlen = strlen(referrer);
-    if (rlen >= sizeof(dir)) return -1;
-    memcpy(dir, referrer, rlen + 1);
-    char* slash = strrchr(dir, '/');
-    if (slash) *slash = 0;
-    size_t need = strlen(dir) + 1 + strlen(tail) + 1;
-    *out = (char*)malloc(need);
-    if (!*out) return -1;
-    snprintf(*out, need, "%s/%s", dir, tail);
-    return 0;
+    if (strncmp(ref, "@loader_path/", 13) == 0 ||
+        strncmp(ref, "@executable_path/", 17) == 0) {
+        const char* tail = strchr(ref + 1, '/');
+        if (!tail) return -1;
+        tail++;
+        char dir[1024];
+        size_t rlen = strlen(referrer);
+        if (rlen >= sizeof(dir)) return -1;
+        memcpy(dir, referrer, rlen + 1);
+        char* slash = strrchr(dir, '/');
+        if (slash) *slash = 0;
+        size_t need = strlen(dir) + 1 + strlen(tail) + 1;
+        *out = (char*)malloc(need);
+        if (!*out) return -1;
+        snprintf(*out, need, "%s/%s", dir, tail);
+        return 0;
+    }
+
+    if (strncmp(ref, "@rpath/", 7) == 0) {
+        if (!rpaths || rpaths->count == 0) return -1;
+        const char* tail = ref + 7;
+        for (size_t i = 0; i < rpaths->count; i++) {
+            const char* rp = rpaths->items[i];
+            /* @loader_path / @executable_path are allowed *inside*
+             * LC_RPATH entries — resolve those against the referrer. */
+            char resolved_rp[1024];
+            if (strncmp(rp, "@loader_path/", 13) == 0 ||
+                strncmp(rp, "@executable_path/", 17) == 0) {
+                const char* rp_tail = strchr(rp + 1, '/');
+                if (!rp_tail) continue;
+                rp_tail++;
+                char dir[1024];
+                size_t rlen = strlen(referrer);
+                if (rlen >= sizeof(dir)) continue;
+                memcpy(dir, referrer, rlen + 1);
+                char* slash = strrchr(dir, '/');
+                if (slash) *slash = 0;
+                snprintf(resolved_rp, sizeof(resolved_rp), "%s/%s", dir, rp_tail);
+                rp = resolved_rp;
+            }
+            char cand[1280];
+            snprintf(cand, sizeof(cand), "%s/%s", rp, tail);
+            struct stat st;
+            if (stat(cand, &st) == 0 && S_ISREG(st.st_mode)) {
+                *out = strdup(cand);
+                return *out ? 0 : -1;
+            }
+        }
+        return -1;
+    }
+
+    return -1;  /* unknown @-prefix */
 }
 /* BFS over `mach_o`'s transitive non-system dep graph. Each newly-seen
  * dep is hardlink-or-copied into `bundle_lib_dir/<basename>`, then its
- * own deps are queued. `seen` is keyed by source-on-disk path so we
- * don't bundle the same dylib twice when both bin/php and an extension
- * pull it in. Best-effort: a single unresolvable @rpath ref logs a
- * warning and keeps going rather than aborting the whole build. */
-static int mac_bundle_deps_recursive(const char* start_mach_o,
+ * own deps are queued.
+ *
+ * IMPORTANT: the queue holds *original* (host) paths, not staged ones.
+ * We otool the original because that's where `@loader_path` references
+ * resolve correctly — `@loader_path/libicudata.78.dylib` in libicuuc
+ * means "sibling of where libicuuc actually lives on the host", which
+ * is `/opt/homebrew/Cellar/icu4c@78/<ver>/lib/`. If we otool'd the
+ * staged copy instead, @loader_path would resolve to our stage/lib/
+ * dir where the sibling hasn't been copied yet, so we'd miss it.
+ *
+ * `seen` is keyed by realpath (canonical source) so a host-side dylib
+ * pointed at by both `/opt/homebrew/lib/libfoo.X.dylib` (symlink) and
+ * `/opt/homebrew/Cellar/.../libfoo.X.dylib` (target) only gets bundled
+ * once. Best-effort: an unresolvable @rpath ref logs a warning and
+ * keeps going rather than aborting the whole build. */
+static int mac_bundle_deps_recursive(const char* start_orig_path,
                                      const char* bundle_lib_dir,
                                      mac_strs_t* seen,
                                      int verbose) {
     mac_strs_t queue = {0};
-    if (mac_strs_push(&queue, start_mach_o) != 0) { mac_strs_free(&queue); return -1; }
+    if (mac_strs_push(&queue, start_orig_path) != 0) { mac_strs_free(&queue); return -1; }
 
     int rc = 0;
     while (queue.count > 0) {
-        char* cur = queue.items[queue.count - 1];
+        char* cur_orig = queue.items[queue.count - 1];
         queue.items[queue.count - 1] = NULL;
         queue.count--;
 
         mac_strs_t deps = {0};
-        if (mac_otool_deps(cur, &deps) != 0) {
-            if (verbose) fprintf(stderr, "  warn: otool -L %s failed\n", cur);
-            free(cur);
+        if (mac_otool_deps(cur_orig, &deps) != 0) {
+            if (verbose) fprintf(stderr, "  warn: otool -L %s failed\n", cur_orig);
+            free(cur_orig);
             continue;
         }
+        /* Parse LC_RPATH so @rpath/ deps resolve against the referrer's
+         * own rpath list. Homebrew dylibs commonly include rpaths into
+         * /opt/homebrew/opt/<formula>/lib — without this we'd lose
+         * transitive deps like libbrotlicommon (referenced via @rpath
+         * from libbrotlidec). */
+        mac_strs_t rpaths = {0};
+        mac_parse_rpaths(cur_orig, &rpaths);
+
         for (size_t i = 0; i < deps.count; i++) {
             const char* dep = deps.items[i];
             char* resolved = NULL;
-            if (mac_resolve_ref(cur, dep, &resolved) != 0) {
-                if (verbose) fprintf(stderr, "  warn: cannot resolve %s (referrer %s) — skipping\n", dep, cur);
+            if (mac_resolve_ref(cur_orig, dep, &rpaths, &resolved) != 0) {
+                if (verbose) fprintf(stderr, "  warn: cannot resolve %s (referrer %s) — skipping\n", dep, cur_orig);
                 continue;
             }
             /* Skip self-reference (dylibs' LC_ID_DYLIB shows up here). */
-            if (strcmp(resolved, cur) == 0) { free(resolved); continue; }
+            if (strcmp(resolved, cur_orig) == 0) { free(resolved); continue; }
             if (mac_is_system_dylib(resolved)) { free(resolved); continue; }
-            if (mac_strs_contains(seen, resolved)) { free(resolved); continue; }
+
+            /* Canonicalize via realpath: Homebrew exposes most dylibs at
+             * `/opt/homebrew/lib/` as relative symlinks into the Cellar.
+             * Dedup, otool, and the hardlink source must all use the
+             * realpath; otherwise pc_copy_or_link_tree preserves the
+             * symlink and the bundled `../Cellar/...` ref dangles. */
+            char real_path[1024];
+            const char* canonical = resolved;
+            if (realpath(resolved, real_path)) {
+                canonical = real_path;
+            }
+
+            if (mac_strs_contains(seen, canonical)) { free(resolved); continue; }
+            if (mac_strs_contains(seen, resolved))  { free(resolved); continue; }
 
             const char* base = strrchr(resolved, '/');
             base = base ? base + 1 : resolved;
             char dst[1280];
             snprintf(dst, sizeof(dst), "%s/%s", bundle_lib_dir, base);
 
-            /* If another bundled lib already has the same basename (different
-             * absolute source), refuse to overwrite — log and keep the first. */
+            /* Basename collision: a previously-seen dylib already lives at
+             * this dst path. Keep the first; log so the user knows. */
             if (mac_strs_contains(seen, dst)) {
                 if (verbose) fprintf(stderr, "  warn: basename collision for %s — keeping first\n", base);
                 free(resolved);
                 continue;
             }
 
-            if (pc_copy_or_link_tree(resolved, dst) != 0) {
-                fprintf(stderr, "  warn: failed to bundle %s -> %s\n", resolved, dst);
+            if (pc_copy_or_link_tree(canonical, dst) != 0) {
+                fprintf(stderr, "  warn: failed to bundle %s -> %s\n", canonical, dst);
                 free(resolved);
                 continue;
             }
             chmod(dst, 0644);
             if (verbose) printf("  bundled dylib: %s\n", base);
 
-            /* Track both source and dst so future "have we seen it" checks
-             * succeed regardless of which key the caller uses. */
+            /* Track original, realpath, and dst so dedup hits whichever
+             * key the next iteration brings in. Push the ORIGINAL host
+             * path into the queue so its @loader_path refs resolve in
+             * the source location, not in our stage. */
             mac_strs_push(seen, resolved);
+            if (canonical != resolved) mac_strs_push(seen, canonical);
             mac_strs_push(seen, dst);
-            mac_strs_push(&queue, dst);
+            mac_strs_push(&queue, resolved);
             free(resolved);
         }
         mac_strs_free(&deps);
-        free(cur);
+        mac_strs_free(&rpaths);
+        free(cur_orig);
     }
     mac_strs_free(&queue);
     return rc;
@@ -692,8 +821,13 @@ static int mac_rewrite_to_bundle(const char* mach_o, int set_id_to_self, int ver
 
     for (size_t i = 0; i < deps.count; i++) {
         const char* dep = deps.items[i];
-        if (dep[0] == '@') continue;             /* already relative */
-        if (mac_is_system_dylib(dep)) continue;  /* /usr/lib or /System */
+        /* Rewrite both absolute non-system refs AND @rpath/X refs. The
+         * latter would otherwise be resolved at runtime against the
+         * binary's LC_RPATH list (still pointing at Homebrew paths),
+         * which doesn't exist on a fresh Mac. By rewriting in advance,
+         * the bundle is rpath-independent. */
+        if (dep[0] == '@' && strncmp(dep, "@rpath/", 7) != 0) continue;
+        if (dep[0] != '@' && mac_is_system_dylib(dep)) continue;
 
         const char* base = strrchr(dep, '/');
         base = base ? base + 1 : dep;
@@ -736,8 +870,17 @@ static int mac_codesign_adhoc(const char* mach_o, int verbose) {
 
 /* Top-level macOS portability pass over a fully staged bin/php +
  * ext/*.so tree. Walks deps, bundles them into <stage>/lib/, rewires
- * every Mach-O in the tree, ad-hoc-signs everything modified. */
-static void mac_make_bundle_portable(const char* stage_dir, int verbose) {
+ * every Mach-O in the tree, ad-hoc-signs everything modified.
+ *
+ * `original_php_bin` is the host path the bundled bin/php was
+ * hardlinked from (post-realpath); ditto `original_ext_dir` for the
+ * .so files in <stage>/ext/. We need the original locations to walk
+ * deps — `@loader_path` refs in a bundled dylib resolve against where
+ * it lived on the host, not where it lives in the bundle. */
+static void mac_make_bundle_portable(const char* stage_dir,
+                                     const char* original_php_bin,
+                                     const char* original_ext_dir,
+                                     int verbose) {
     char lib_dir[1024];
     snprintf(lib_dir, sizeof(lib_dir), "%s/lib", stage_dir);
     if (pc_mkdir_p(lib_dir) != 0) {
@@ -745,15 +888,19 @@ static void mac_make_bundle_portable(const char* stage_dir, int verbose) {
         return;
     }
 
-    /* Discover everything that lives in stage_dir/bin and stage_dir/ext.
-     * These are the "roots" of the dep graph. Bundling is BFS; each new
-     * dylib gets pulled into lib_dir and itself becomes a root. */
-    mac_strs_t roots = {0};
+    /* Two parallel lists: `roots_staged` is what we rewrite/codesign at
+     * the end; `roots_orig` is what we feed into the dep-graph walker
+     * so @loader_path resolves to the host filesystem (where siblings
+     * actually exist). For each ext/*.so we discover, the corresponding
+     * host location is <original_ext_dir>/<same-basename>. */
+    mac_strs_t roots_staged = {0};
+    mac_strs_t roots_orig   = {0};
     char p[1024];
     snprintf(p, sizeof(p), "%s/bin/php", stage_dir);
     struct stat st;
-    if (stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
-        mac_strs_push(&roots, p);
+    if (stat(p, &st) == 0 && S_ISREG(st.st_mode) && original_php_bin) {
+        mac_strs_push(&roots_staged, p);
+        mac_strs_push(&roots_orig,   original_php_bin);
     }
     snprintf(p, sizeof(p), "%s/ext", stage_dir);
     DIR* d = opendir(p);
@@ -763,17 +910,27 @@ static void mac_make_bundle_portable(const char* stage_dir, int verbose) {
             const char* nm = e->d_name;
             const char* dot = strrchr(nm, '.');
             if (!dot || strcmp(dot, ".so") != 0) continue;
-            char full[1280];
-            snprintf(full, sizeof(full), "%s/%s", p, nm);
-            mac_strs_push(&roots, full);
+            char full_staged[1280];
+            snprintf(full_staged, sizeof(full_staged), "%s/%s", p, nm);
+            mac_strs_push(&roots_staged, full_staged);
+            if (original_ext_dir && *original_ext_dir) {
+                char full_orig[1280];
+                snprintf(full_orig, sizeof(full_orig), "%s/%s", original_ext_dir, nm);
+                mac_strs_push(&roots_orig, full_orig);
+            } else {
+                /* No original ext dir (static PHP) — fall back to the
+                 * staged path; will mostly resolve since the bundle has
+                 * no @loader_path refs in this case. */
+                mac_strs_push(&roots_orig, full_staged);
+            }
         }
         closedir(d);
     }
 
     /* Bundle the transitive closure of non-system deps. */
     mac_strs_t seen = {0};
-    for (size_t i = 0; i < roots.count; i++) {
-        mac_bundle_deps_recursive(roots.items[i], lib_dir, &seen, verbose);
+    for (size_t i = 0; i < roots_orig.count; i++) {
+        mac_bundle_deps_recursive(roots_orig.items[i], lib_dir, &seen, verbose);
     }
 
     /* Now rewrite every Mach-O in the tree (roots + bundled libs). The
@@ -781,9 +938,9 @@ static void mac_make_bundle_portable(const char* stage_dir, int verbose) {
      * executable; ext/*.so are bundles with no install name worth
      * advertising) so don't touch their id. Bundled lib/*.dylib DO get
      * an -id rewrite so they declare themselves @executable_path-relative. */
-    for (size_t i = 0; i < roots.count; i++) {
-        mac_rewrite_to_bundle(roots.items[i], 0, verbose);
-        mac_codesign_adhoc(roots.items[i], verbose);
+    for (size_t i = 0; i < roots_staged.count; i++) {
+        mac_rewrite_to_bundle(roots_staged.items[i], 0, verbose);
+        mac_codesign_adhoc(roots_staged.items[i], verbose);
     }
 
     DIR* dl = opendir(lib_dir);
@@ -818,7 +975,8 @@ static void mac_make_bundle_portable(const char* stage_dir, int verbose) {
     }
 
     mac_strs_free(&seen);
-    mac_strs_free(&roots);
+    mac_strs_free(&roots_staged);
+    mac_strs_free(&roots_orig);
 }
 #endif  /* __APPLE__ */
 
@@ -851,9 +1009,24 @@ static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
     snprintf(p, sizeof(p), "%s/bin/conf.d", stage_dir); if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
     snprintf(p, sizeof(p), "%s/ext", stage_dir);        if (pc_mkdir_p(p) != 0) return UB_ERROR_EXTRACTION_FAILED;
 
-    /* bin/php — hardlink-or-copy from the host. */
+    /* bin/php — hardlink-or-copy from the host. Resolve through symlinks
+     * first: Homebrew exposes `php` as `/opt/homebrew/bin/php` →
+     * `../Cellar/php/<ver>/bin/php` (a RELATIVE symlink). `pc_copy_or_link_tree`
+     * faithfully preserves symlinks, but a relative link to `../Cellar/...`
+     * becomes dangling once the bundle is extracted on a target that has no
+     * Cellar tree. realpath() collapses the chain to the real binary so we
+     * hardlink/copy the actual file. */
+#ifndef PLATFORM_WINDOWS
+    char php_real_path[1024];
+    const char* php_to_stage = php_bin;
+    if (realpath(php_bin, php_real_path)) {
+        php_to_stage = php_real_path;
+    }
+#else
+    const char* php_to_stage = php_bin;
+#endif
     snprintf(p, sizeof(p), "%s/bin/php", stage_dir);
-    if (pc_copy_or_link_tree(php_bin, p) != 0) {
+    if (pc_copy_or_link_tree(php_to_stage, p) != 0) {
         fprintf(stderr, "Error: failed to stage host PHP binary at %s\n", p);
         return UB_ERROR_EXTRACTION_FAILED;
     }
@@ -868,14 +1041,19 @@ static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
                         host_scan_dir, sizeof(host_scan_dir));
 
     snprintf(p, sizeof(p), "%s/bin/php.ini", stage_dir);
-    if (host_main_ini[0]) {
-        FILE* fi = fopen(host_main_ini, "rb");
+    /* `php --ini` reports the path PHP _would_ load if present, but on
+     * fresh Homebrew installs (and Herd/static-php-cli) the file often
+     * doesn't actually exist on disk yet — only `php.ini-development` /
+     * `-production` ship. Treat an unreadable source the same as the
+     * "(none)" case rather than failing the entire build: write an empty
+     * placeholder so `-c <ini>` resolves and let conf.d/ + the
+     * 99-ubuilder-overrides.ini we drop below carry the actual config. */
+    FILE* fi = host_main_ini[0] ? fopen(host_main_ini, "rb") : NULL;
+    if (fi) {
         FILE* fo = fopen(p, "wb");
-        if (!fi || !fo) {
-            if (fi) fclose(fi);
-            if (fo) fclose(fo);
-            fprintf(stderr, "Error: failed to copy host php.ini (%s -> %s)\n",
-                    host_main_ini, p);
+        if (!fo) {
+            fclose(fi);
+            fprintf(stderr, "Error: failed to open stage php.ini for write: %s\n", p);
             return UB_ERROR_EXTRACTION_FAILED;
         }
         char buf[4096];
@@ -889,10 +1067,20 @@ static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
         }
         fclose(fi); fclose(fo);
     } else {
-        /* Host didn't have a php.ini at all — write an empty placeholder so
-         * the launcher's `-c <ini>` argument resolves. */
+        if (host_main_ini[0] && config && config->verbose) {
+            printf("note: host php.ini reported at %s but not readable — using placeholder\n",
+                   host_main_ini);
+        }
         FILE* fo = fopen(p, "w");
-        if (fo) { fprintf(fo, "; (host had no php.ini; see conf.d/ for ubuilder overrides)\n"); fclose(fo); }
+        if (fo) {
+            if (host_main_ini[0]) {
+                fprintf(fo, "; (host reported %s but it wasn't readable at build time; conf.d/ holds the active config)\n",
+                        host_main_ini);
+            } else {
+                fprintf(fo, "; (host had no php.ini; see conf.d/ for ubuilder overrides)\n");
+            }
+            fclose(fo);
+        }
     }
 
     /* Copy host conf.d → bin/conf.d, dropping fragments for --excluded exts. */
@@ -940,8 +1128,13 @@ static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
      * For statically linked host PHP (Herd) every dep is /usr/lib or
      * /System and this completes as a no-op (no dylibs bundled, no refs
      * to rewrite). For dynamic Homebrew PHP it pulls in the libxml2 /
-     * libicu / libsodium etc. chain so the bundle runs on a clean Mac. */
-    mac_make_bundle_portable(stage_dir, config ? config->verbose : 0);
+     * libicu / libsodium etc. chain so the bundle runs on a clean Mac.
+     *
+     * Pass the ORIGINAL host paths (post-realpath for php_bin; the host
+     * ext_dir for .so files) so the BFS walker resolves @loader_path
+     * refs in the location they were authored against. */
+    mac_make_bundle_portable(stage_dir, php_to_stage, ext_dir_host,
+                             config ? config->verbose : 0);
 #endif
 
     return UB_SUCCESS;
@@ -1023,28 +1216,52 @@ static ub_result_t php_embed_runtime(const ub_config_t* config, FILE* output_fil
         return UB_ERROR_RUNTIME_NOT_FOUND;
     }
 
-    /* Static-PHP detection: builds from `static-php-cli` (which is what
-     * Laravel Herd ships on macOS) compile every extension into the
-     * `php` binary itself and report a leftover, non-existent
-     * `extension_dir` from `./configure --prefix=` (e.g. literally
-     * `/lib/php/extensions/no-debug-non-zts-<api>`). If the reported
-     * dir doesn't exist on disk, treat host PHP as statically linked:
-     * skip extension enumeration and ship the binary + ini as-is.
-     * `php -m` then surfaces every built-in module without us copying
-     * a single `.so`. This is the M1-D shape the docs promised — the
-     * binary IS already hermetic, we just have to stop fighting it. */
+    /* Static-PHP detection. Two shapes of "compiled-in extensions, nothing
+     * to bundle" we collapse together:
+     *   1. Reported `extension_dir` doesn't exist on disk
+     *      (static-php-cli output: Herd reports `/lib/php/extensions/...`
+     *      from `./configure --prefix=`, a path that's never resolved)
+     *   2. Reported `extension_dir` exists but contains no `.so` files
+     *      (Homebrew base install: 71 modules compiled into the binary,
+     *      empty `/opt/homebrew/lib/php/pecl/<api>/` waits for future
+     *      `pecl install <ext>` to drop files in)
+     * In both cases `php -m` surfaces every built-in module; we ship the
+     * binary + ini as-is, ext/ stays empty. Avoids inventing a fake
+     * extension_dir layout the host doesn't actually use. */
     int static_php = 0;
     {
         struct stat ext_st;
         if (stat(ext_dir_host, &ext_st) != 0 || !S_ISDIR(ext_st.st_mode)) {
             static_php = 1;
+        } else {
+            DIR* d = opendir(ext_dir_host);
+            int has_so = 0;
+            if (d) {
+                struct dirent* e;
+                while ((e = readdir(d)) != NULL) {
+                    const char* nm = e->d_name;
+                    const char* dot = strrchr(nm, '.');
+                    if (dot && strcmp(dot, ".so") == 0 && dot != nm) {
+                        has_so = 1;
+                        break;
+                    }
+                }
+                closedir(d);
+            }
+            if (!has_so) static_php = 1;
         }
     }
 
     if (config && config->verbose) {
+        const char* static_note = "";
+        if (static_php) {
+            struct stat ext_st;
+            static_note = (stat(ext_dir_host, &ext_st) != 0)
+                ? "  (not on disk — treating PHP as statically linked)"
+                : "  (empty — every extension is compiled into the binary)";
+        }
         printf("Host PHP: %s\n  extension_dir: %s%s\n",
-               php_bin, ext_dir_host,
-               static_php ? "  (not on disk — treating PHP as statically linked)" : "");
+               php_bin, ext_dir_host, static_note);
     }
 
     /* DEFAULT BUNDLING POLICY: copy ALL .so files from the host's
