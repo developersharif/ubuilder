@@ -230,13 +230,19 @@ int ub_embed_windows_icon(const char* exe_path, const char* ico_path) {
     const WORD lang = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
     int ok = 1;
 
-    /* Each image becomes an RT_ICON resource with integer ID i+1. */
+    /* Each image becomes an RT_ICON resource with integer ID i+1.
+     *
+     * NOTE: must use MAKEINTRESOURCEW(3) for RT_ICON rather than the
+     * platform RT_ICON macro. The latter expands to MAKEINTRESOURCE
+     * which is LPSTR, mismatching the W-form UpdateResourceW signature
+     * (MSVC errors C4133, mingw compiles but the resource type is
+     * stored wrong). Same applies to RT_GROUP_ICON (14) below. */
     for (uint16_t i = 0; i < dir.count && ok; i++) {
         ico_dir_entry_t e;
         memcpy(&e, ico_buf + sizeof(ico_dir_t) + (size_t)i * sizeof(ico_dir_entry_t),
                sizeof(e));
         uint8_t* img = ico_buf + e.image_offset;
-        if (!UpdateResourceW(h, RT_ICON,
+        if (!UpdateResourceW(h, MAKEINTRESOURCEW(3) /* RT_ICON */,
                              MAKEINTRESOURCEW(i + 1),
                              lang, img, e.bytes_in_res)) {
             DWORD err = GetLastError();
@@ -252,7 +258,7 @@ int ub_embed_windows_icon(const char* exe_path, const char* ico_path) {
     size_t   grp_len = 0;
     uint8_t* grp     = ok ? build_group_icon(ico_buf, ico_len, &grp_len) : NULL;
     if (ok && grp) {
-        if (!UpdateResourceW(h, RT_GROUP_ICON,
+        if (!UpdateResourceW(h, MAKEINTRESOURCEW(14) /* RT_GROUP_ICON */,
                              L"MAINICON", lang, grp, (DWORD)grp_len)) {
             DWORD err = GetLastError();
             fprintf(stderr, "Error: UpdateResource(RT_GROUP_ICON) failed: Win32 error %lu\n",

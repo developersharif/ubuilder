@@ -9,8 +9,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <unistd.h>      /* write, close, unlink */
-#include <sys/types.h>   /* ssize_t */
+
+/* Portable temp-file I/O: POSIX has unistd write/close/unlink + mkstemp,
+ * MSVC doesn't ship <unistd.h>. Use stdio (fopen/fwrite/fclose) and
+ * `remove()` everywhere — both are C-standard. */
+#ifdef _WIN32
+#  include <process.h>   /* _getpid */
+#  define getpid _getpid
+#else
+#  include <unistd.h>
+#endif
 
 extern int test_count;
 extern int test_passed;
@@ -21,15 +29,31 @@ extern int test_passed;
     else           {                printf("✗ %s\n", name); } \
 } while (0)
 
-/* Write `bytes` to a temp file and return the path (heap; caller frees). */
+/* Write `bytes` to a temp file and return the path (heap; caller frees).
+ * We generate a unique-enough name from pid + a monotonic counter to avoid
+ * collisions across calls within a single test run. Uses stdio rather than
+ * mkstemp/open so MSVC (no <unistd.h>) builds cleanly. */
 static char* write_temp_ico(const uint8_t* bytes, size_t len) {
-    char tmpl[] = "/tmp/ub-icon-XXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd < 0) return NULL;
-    if (write(fd, bytes, len) != (ssize_t)len) { close(fd); unlink(tmpl); return NULL; }
-    close(fd);
-    char* p = (char*)malloc(strlen(tmpl) + 1);
-    if (p) strcpy(p, tmpl);
+    static int counter = 0;
+    counter++;
+#ifdef _WIN32
+    const char* dir = getenv("TEMP");
+    if (!dir) dir = getenv("TMP");
+    if (!dir) dir = ".";
+    const char  sep = '\\';
+#else
+    const char* dir = "/tmp";
+    const char  sep = '/';
+#endif
+    char path[512];
+    snprintf(path, sizeof(path), "%s%cub-icon-%d-%d.ico",
+             dir, sep, (int)getpid(), counter);
+    FILE* f = fopen(path, "wb");
+    if (!f) return NULL;
+    if (fwrite(bytes, 1, len, f) != len) { fclose(f); remove(path); return NULL; }
+    fclose(f);
+    char* p = (char*)malloc(strlen(path) + 1);
+    if (p) strcpy(p, path);
     return p;
 }
 
@@ -61,7 +85,7 @@ static void test_ico_validate_well_formed(void) {
     char* path = write_temp_ico(bytes, sizeof(bytes));
     int n = path ? ub_ico_validate(path) : -1;
     TEST("ico_validate accepts well-formed single-image .ico (returns 1)", n == 1);
-    if (path) { unlink(path); free(path); }
+    if (path) { remove(path); free(path); }
 }
 
 static void test_ico_validate_rejects_short_header(void) {
@@ -69,7 +93,7 @@ static void test_ico_validate_rejects_short_header(void) {
     char* path = write_temp_ico(bytes, sizeof(bytes));
     int n = path ? ub_ico_validate(path) : -1;
     TEST("ico_validate rejects file shorter than ICONDIR", n < 0);
-    if (path) { unlink(path); free(path); }
+    if (path) { remove(path); free(path); }
 }
 
 static void test_ico_validate_rejects_wrong_type(void) {
@@ -79,7 +103,7 @@ static void test_ico_validate_rejects_wrong_type(void) {
     char* path = write_temp_ico(bytes, sizeof(bytes));
     int n = path ? ub_ico_validate(path) : -1;
     TEST("ico_validate rejects cursor type (type != 1)", n < 0);
-    if (path) { unlink(path); free(path); }
+    if (path) { remove(path); free(path); }
 }
 
 static void test_ico_validate_rejects_zero_count(void) {
@@ -89,7 +113,7 @@ static void test_ico_validate_rejects_zero_count(void) {
     char* path = write_temp_ico(bytes, sizeof(bytes));
     int n = path ? ub_ico_validate(path) : -1;
     TEST("ico_validate rejects empty .ico (count = 0)", n < 0);
-    if (path) { unlink(path); free(path); }
+    if (path) { remove(path); free(path); }
 }
 
 static void test_ico_validate_rejects_offset_past_eof(void) {
@@ -99,7 +123,7 @@ static void test_ico_validate_rejects_offset_past_eof(void) {
     char* path = write_temp_ico(bytes, sizeof(bytes));
     int n = path ? ub_ico_validate(path) : -1;
     TEST("ico_validate rejects entry whose image extends past EOF", n < 0);
-    if (path) { unlink(path); free(path); }
+    if (path) { remove(path); free(path); }
 }
 
 static void test_ico_validate_rejects_missing_file(void) {
