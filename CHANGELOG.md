@@ -44,6 +44,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacing existing signature" line from codesign were correct but
   misleading (we always `codesign --force` right after edits). Build
   log for the macOS PHP runtime path drops from ~550 lines to ~4.
+- **Linux PHP bundle crash on glibc (`*** buffer overflow detected ***`):**
+  the new `php_stage_synthetic_runtime` used `char buf[1024]` as the
+  destination for `realpath()`. glibc's `_FORTIFY_SOURCE` wraps
+  `realpath(path, buf)` as `__realpath_chk`, which aborts immediately
+  when the destination is smaller than `PATH_MAX` — the check is on
+  buffer capacity, not on what was actually written. macOS happens to
+  define `PATH_MAX = 1024` so the 1024-byte buffer matched and the bug
+  was invisible there; Linux's `PATH_MAX = 4096` made every PHP bundle
+  abort with `Aborted (core dumped)` before printing anything useful.
+  Buffers now sized to `PATH_MAX` with `<limits.h>` included.
+- **MSVC compile failure in `php_static.c`:** the file used POSIX-only
+  spellings (`getpid` rather than `_getpid`, missing `_chmod`-ish
+  fallbacks for `<io.h>`) that broke the Windows release build. Added
+  the necessary `_WIN32` shims so the static-PHP scaffolding compiles
+  on MSVC even though `--php-runtime=static` is not yet wired up for
+  Windows builds.
 
 ## [v2.4.3] - 2026-05-20
 

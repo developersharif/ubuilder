@@ -20,8 +20,8 @@ extern "C" {
 // (src/core/ubuilder.c) derives its return value from these macros via the
 // preprocessor, so bumping the patch level means editing only this file.
 #define UBUILDER_VERSION_MAJOR 2
-#define UBUILDER_VERSION_MINOR 4
-#define UBUILDER_VERSION_PATCH 3
+#define UBUILDER_VERSION_MINOR 5
+#define UBUILDER_VERSION_PATCH 0
 
 // Platform definitions
 #ifdef _WIN32
