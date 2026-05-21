@@ -5,6 +5,23 @@ All notable changes to UBuilder will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.5.1] - 2026-05-21
+
+### Added
+
+- **Windows executable icon embedding**: pass `--icon <file.ico>` (or set
+  `"icon"` in `ubuilder.json`) to embed a `.ico` file into the output `.exe`
+  as a native Win32 resource. The icon appears in Explorer, the taskbar, and
+  the Alt-Tab switcher without any post-processing step.
+
+### Fixed
+
+- Windows icon resource handle now uses `MAKEINTRESOURCEW` instead of a raw
+  cast, matching the Win32 `RT_ICON` / `GRPICONDIR` contract correctly.
+- Executable detection on Windows now rejects 0-byte App Execution Alias
+  stubs (e.g. `python.exe` from the Store redirect) so ubuilder falls through
+  to a real interpreter instead of treating the alias as a valid runtime.
+
 ## [v2.5.0] - 2026-05-21
 
 ### Added
