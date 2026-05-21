@@ -556,7 +556,23 @@ static const char* WIN_EXTS[] = { "", ".exe", ".cmd", ".bat", NULL };
 static int is_executable(const char* path) {
 #ifdef _WIN32
     DWORD a = GetFileAttributesA(path);
-    return (a != INVALID_FILE_ATTRIBUTES) && !(a & FILE_ATTRIBUTE_DIRECTORY);
+    if (a == INVALID_FILE_ATTRIBUTES || (a & FILE_ATTRIBUTE_DIRECTORY)) return 0;
+
+    /* Reject 0-byte "executables" — these are Windows App Execution
+     * Aliases (zero-byte reparse points under
+     * %LOCALAPPDATA%\Microsoft\WindowsApps\) that the Store redirects
+     * at exec time. On a runner without the aliased app installed,
+     * launching them opens the Store or fails silently; for our
+     * embed-the-binary use case they're useless. Without this check,
+     * `pc_path_lookup("python")` returns the alias first and downstream
+     * stat() reports size 0, mapped to UB_ERROR_FILE_NOT_FOUND ("Python
+     * runtime not found on system") even when a real python.exe exists
+     * later on PATH. */
+    WIN32_FILE_ATTRIBUTE_DATA fd;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fd)) return 0;
+    if (fd.nFileSizeHigh == 0 && fd.nFileSizeLow == 0) return 0;
+
+    return 1;
 #else
     return access(path, X_OK) == 0;
 #endif
