@@ -54,9 +54,12 @@ jobs:
           - os: macos-14
             target: macos-arm64
             triple: aarch64-apple-darwin
-          - os: macos-13
-            target: macos-x86_64
-            triple: x86_64-apple-darwin
+          # macos-13 / x86_64-apple-darwin dropped: GitHub deprecated the
+          # free-tier macos-13 hosted runner image, so jobs targeting it
+          # sit in `queued` forever (runner_id never assigned). Re-enable
+          # via `macos-13-large` (paid Intel runner) or by cross-compiling
+          # from macos-14 with `spc build --with-clang-target=x86_64-...`
+          # if Intel-Mac coverage becomes worth the cost/complexity.
           - os: ubuntu-latest
             target: linux-x86_64
             triple: x86_64-unknown-linux-musl
