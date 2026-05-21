@@ -21,7 +21,7 @@ extern "C" {
 // preprocessor, so bumping the patch level means editing only this file.
 #define UBUILDER_VERSION_MAJOR 2
 #define UBUILDER_VERSION_MINOR 5
-#define UBUILDER_VERSION_PATCH 0
+#define UBUILDER_VERSION_PATCH 1
 
 // Platform definitions
 #ifdef _WIN32
