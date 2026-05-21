@@ -14,6 +14,8 @@ add_library(ubuilder_core STATIC
     core/platform_compat.h
     core/sha256.c
     core/sha256.h
+    core/icon_embed.c
+    core/icon_embed.h
     runtimes/runtime_manager.c
     runtimes/runtime_manager.h
     runtimes/python_runtime.c

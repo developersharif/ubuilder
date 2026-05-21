@@ -105,6 +105,15 @@ typedef struct {
      * Set by --php-runtime=host|static or "php_runtime" in ubuilder.json.
      * Only consulted when runtime == UB_RUNTIME_PHP. */
     int php_runtime_static;
+    /* v2.6: Windows .exe icon. Path to an .ico file (relative paths
+     * resolve against the project_dir). Embedded as RT_ICON +
+     * RT_GROUP_ICON("MAINICON") in the output PE via Win32
+     * BeginUpdateResource/UpdateResource/EndUpdateResource.
+     * Set by --icon=<path> or "icon" in ubuilder.json.
+     * Ignored on non-Windows hosts (cross-OS PE resource editing isn't
+     * supported today) and for non-Windows targets — Linux ELF and
+     * macOS Mach-O have no in-binary icon concept. */
+    char* icon_path;
     /* Glob patterns and/or `ext-<name>` tokens to omit from the bundle.
      * Applied in two places:
      *   - app file recursion (every runtime): paths matching any pattern

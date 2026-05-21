@@ -23,6 +23,7 @@ typedef struct {
     unsigned no_auto_vendor    : 1;
     unsigned exclude           : 1;
     unsigned php_runtime_static : 1;
+    unsigned icon              : 1;
 } ub_cli_presence_t;
 
 typedef struct ub_config_file ub_config_file_t;

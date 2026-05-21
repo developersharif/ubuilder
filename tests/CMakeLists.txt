@@ -8,6 +8,7 @@ add_executable(test_ubuilder
     test_sha256.c
     test_php_builder.c
     test_glob_match.c
+    test_icon_embed.c
 )
 
 target_link_libraries(test_ubuilder ubuilder_core)

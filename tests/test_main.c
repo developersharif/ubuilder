@@ -24,6 +24,7 @@ extern void test_platform_compat(void);
 extern void test_sha256(void);
 extern void test_php_builder(void);
 extern void test_glob_match(void);
+extern void test_icon_embed(void);
 
 int main(void) {
     printf("UBuilder Test Suite\n");
@@ -44,6 +45,7 @@ int main(void) {
     test_sha256();
     test_php_builder();
     test_glob_match();
+    test_icon_embed();
 
     // Cleanup
     ub_cleanup();

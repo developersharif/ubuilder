@@ -30,6 +30,7 @@ static struct option long_options[] = {
     {"exclude",           required_argument, 0,  6 },
     {"self-update",       no_argument,       0,  7 },
     {"php-runtime",       required_argument, 0,  8 },
+    {"icon",              required_argument, 0,  9 },
     {"gui",               no_argument,       0, 'g'},
     {"verbose",     no_argument,       0, 'v'},
     {"help",        no_argument,       0, 'h'},
@@ -239,6 +240,9 @@ static void print_usage(const char* program_name) {
     printf("                            php binary's deps; \"static\" downloads a curated static\n");
     printf("                            build from ubuilder's releases (~50 MB bundles vs ~400 MB).\n");
     printf("                            Only meaningful when --runtime=php.\n");
+    printf("      --icon PATH           Windows .ico embedded into the output .exe as the\n");
+    printf("                            RT_GROUP_ICON resource (shown in Explorer / taskbar).\n");
+    printf("                            Ignored on non-Windows hosts and for non-Windows targets.\n");
     printf("  -g, --gui                 Enable GUI support\n");
     printf("  -v, --verbose             Enable verbose output\n");
     printf("  -h, --help                Show this help message\n");
@@ -336,6 +340,13 @@ static ub_result_t parse_arguments(int argc, char* argv[],
             if (set_php_runtime(config, presence, argv[++i]) != 0) return UB_ERROR_INVALID_ARGS;
         } else if (strncmp(arg, "--php-runtime=", 14) == 0) {
             if (set_php_runtime(config, presence, arg + 14) != 0) return UB_ERROR_INVALID_ARGS;
+        } else if (strcmp(arg, "--icon") == 0) {
+            if (i + 1 >= argc) { fprintf(stderr, "Error: --icon requires an argument\n"); return UB_ERROR_INVALID_ARGS; }
+            config->icon_path = strdup(argv[++i]);
+            presence->icon = 1;
+        } else if (strncmp(arg, "--icon=", 7) == 0) {
+            config->icon_path = strdup(arg + 7);
+            presence->icon = 1;
         } else if (strcmp(arg, "--gui") == 0 || strcmp(arg, "-g") == 0) {
             config->enable_gui = 1;
             presence->gui = 1;
@@ -408,6 +419,10 @@ static ub_result_t parse_arguments(int argc, char* argv[],
                 if (set_php_runtime(config, presence, optarg) != 0)
                     return UB_ERROR_INVALID_ARGS;
                 break;
+            case 9: /* --icon */
+                config->icon_path = strdup(optarg);
+                presence->icon = 1;
+                break;
             case 'g':
                 config->enable_gui = 1;
                 presence->gui = 1;
@@ -456,6 +471,7 @@ static void free_config(ub_config_t* config) {
     free(config->output_path);
     free(config->entry_point);
     free(config->runtime_source);
+    free(config->icon_path);
     for (size_t i = 0; i < config->exclude_count; i++) free(config->exclude[i]);
     free(config->exclude);
     memset(config, 0, sizeof(*config));

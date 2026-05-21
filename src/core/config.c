@@ -89,6 +89,7 @@ static const char* KNOWN_ROOT_KEYS[] = {
     "include", "exclude", "verbose", "gui", "compression", "console",
     "runtime_options", "build",
     "php_runtime",
+    "icon",
     NULL
 };
 
@@ -300,6 +301,11 @@ ub_result_t ub_config_write_if_missing(const ub_config_t* cfg) {
         }
         fputs("],\n", fp);
     }
+    if (cfg->icon_path) {
+        fprintf(fp, "  \"icon\": ");
+        json_escape_to(fp, cfg->icon_path);
+        fputs(",\n", fp);
+    }
     /* Trailing key with no comma — we always write it for valid JSON. */
     fputs("  \"_generated_by\": \"ubuilder first build\"\n", fp);
     fputs("}\n", fp);
@@ -408,6 +414,16 @@ ub_result_t ub_config_apply(const ub_config_file_t*  file,
             int rc = expect_bool(file->path, "console", v, &b);
             if (rc < 0) return UB_ERROR_INVALID_ARGS;
             if (rc > 0) cfg->console_window = b;
+        }
+    }
+    /* icon: path to a Windows .ico file. CLI --icon wins. */
+    if (!presence->icon && !cfg->icon_path) {
+        const json_value_t* v = json_obj_get(file->root, "icon");
+        if (v) {
+            char* s = NULL;
+            int rc = expect_string(file->path, "icon", v, &s);
+            if (rc < 0) return UB_ERROR_INVALID_ARGS;
+            if (rc > 0) cfg->icon_path = s;
         }
     }
 

@@ -1,6 +1,7 @@
 #include "ubuilder.h"
 #include "platform_compat.h"
 #include "sha256.h"
+#include "icon_embed.h"
 #include "runtimes/runtime_builder.h"
 #include "runtimes/runtime_embedder.h"
 #include <stdio.h>
@@ -772,6 +773,25 @@ static ub_result_t create_modular_executable(const ub_config_t* config) {
         patch_pe_subsystem(config->output_path, 2 /* IMAGE_SUBSYSTEM_WINDOWS_GUI */);
     }
 #endif
+
+    /* v2.6: --icon embedding. Must run BEFORE the runtime payload is
+     * appended below — Win32 EndUpdateResource rewrites the PE image,
+     * and any trailing data we'd already appended would be lost. On
+     * non-Windows hosts ub_embed_windows_icon is a noop that just
+     * validates the .ico and prints a "skipping" note. The PE
+     * resource section is internal to the image; appending bytes past
+     * end-of-image afterwards is preserved untouched. */
+    if (config->icon_path && *config->icon_path) {
+        if (ub_embed_windows_icon(config->output_path, config->icon_path) != 0) {
+            /* Embed failed — diagnostic was already printed. Don't
+             * silently produce a bundle with no icon when the user
+             * asked for one. */
+            return UB_ERROR_EXTRACTION_FAILED;
+        }
+        if (config->verbose) {
+            printf("Embedded icon: %s\n", config->icon_path);
+        }
+    }
     
     // 2. Open output file for appending runtime-specific data
     FILE* output_file = fopen(config->output_path, "ab");

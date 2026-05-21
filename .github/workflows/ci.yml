@@ -312,6 +312,52 @@ jobs:
             Write-Host "examples\output directory not found" -ForegroundColor Yellow
           }
 
+      - name: Verify --icon embeds RT_GROUP_ICON("MAINICON")
+        shell: pwsh
+        run: |
+          Write-Host "=== Icon embedding sanity check ===" -ForegroundColor Cyan
+          $ub = if (Test-Path "build\src\Release\ubuilder.exe") { "build\src\Release\ubuilder.exe" } else { "build\src\ubuilder.exe" }
+
+          # Minimum-viable .ico: 6-byte ICONDIR + one 16-byte ICONDIRENTRY +
+          # 1-byte "image" payload. Header validation will pass; UpdateResource
+          # doesn't inspect the image data, just stores it as RT_ICON.
+          $ico = [byte[]]@(
+            0,0, 1,0, 1,0,
+            16,16,0,0, 1,0, 32,0, 1,0,0,0, 22,0,0,0,
+            0xff
+          )
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\test.ico", $ico)
+
+          # Bundle the python fixture WITH --icon. We don't care about the
+          # bundle running here — we only care that the embedded PE has the
+          # MAINICON resource name.
+          $bundle = "$env:RUNNER_TEMP\icon-test.exe"
+          & $ub --project-dir=tests\bundle\fixtures\python `
+                --icon="$env:RUNNER_TEMP\test.ico" `
+                --output="$bundle"
+          if ($LASTEXITCODE -ne 0) { Write-Host "build failed (exit $LASTEXITCODE)" -ForegroundColor Red; exit 1 }
+
+          # PE resource directory stores names as UTF-16LE without a NUL
+          # terminator (a length-prefixed counted string in
+          # IMAGE_RESOURCE_DIR_STRING_U). So we search the raw bytes for the
+          # 16-byte UTF-16LE encoding of "MAINICON".
+          $bytes  = [IO.File]::ReadAllBytes($bundle)
+          $needle = [Text.Encoding]::Unicode.GetBytes("MAINICON")
+          $found  = $false
+          for ($i = 0; $i -le ($bytes.Length - $needle.Length); $i++) {
+            $match = $true
+            for ($j = 0; $j -lt $needle.Length; $j++) {
+              if ($bytes[$i + $j] -ne $needle[$j]) { $match = $false; break }
+            }
+            if ($match) { $found = $true; break }
+          }
+          if ($found) {
+            Write-Host "  pass: MAINICON resource name found in PE" -ForegroundColor Green
+          } else {
+            Write-Host "  fail: MAINICON not found in $bundle — icon was not embedded" -ForegroundColor Red
+            exit 1
+          }
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
