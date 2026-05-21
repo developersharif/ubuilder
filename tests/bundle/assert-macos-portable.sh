@@ -38,68 +38,45 @@ if [[ ! -x "$BUNDLE" ]]; then
     exit 2
 fi
 
-# Launch the bundle just long enough for it to extract its runtime tree
-# to a deterministic location, then snapshot the extracted tree before
-# the bundle wipes it on exit.
+# Run the bundle with UBUILDER_KEEP_EXTRACT=1 so the launcher skips its
+# atexit cleanup and leaves the extracted tree on disk for us to inspect.
+# This sidesteps the race that biased earlier versions of this script:
+# a fast CLI fixture (PHP "hello world" finishes in <100ms on M-series)
+# would extract, run, AND wipe the temp dir before the first 100ms poll
+# could find it. With keep-extract, the launcher logs the dir path to
+# stderr; we parse it and snapshot AFTER the bundle exits cleanly.
 WORK="$(mktemp -d -t ubuilder-portcheck.XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
+EXTRACT=""
+cleanup() {
+    rm -rf "$WORK"
+    [[ -n "$EXTRACT" && -d "$EXTRACT" ]] && rm -rf "$EXTRACT"
+}
+trap cleanup EXIT
 
-# Bundle extracts to /var/folders/.../T/ubuilder-<pid>/. We run the bundle
-# under a short timeout against /dev/null stdin; if it exits quickly
-# (cli) we snapshot the temp dir before cleanup; if it stays running
-# (gui) we kill it.
 LOG="$WORK/run.log"
 echo "[port-check] starting bundle $BUNDLE, TMPDIR=${TMPDIR:-(unset)}"
-"$BUNDLE" >"$LOG" 2>&1 &
-PID=$!
-echo "[port-check] launched PID=$PID"
-EXTRACT=""
-# Search wherever mkdtemp may have placed the launcher's extract dir.
-# - $TMPDIR honored on macOS, GH Actions sets a runner-specific path.
-# - /var/folders/*/*/T/ is the default user temp on macOS (M-series + Intel).
-# - /tmp is the POSIX fallback the launcher uses when neither of the above
-#   are usable.
-# Use :- defaults so an unset TMPDIR doesn't trigger set -u.
-for i in $(seq 1 50); do
-    sleep 0.1
-    EXTRACT="$(ls -dt "${TMPDIR:-/tmp}/ubuilder-${PID}" \
-                       /var/folders/*/*/T/ubuilder-${PID} \
-                       /tmp/ubuilder-${PID} \
-                       2>/dev/null | head -1 || true)"
-    [[ -n "$EXTRACT" && -d "$EXTRACT/runtime/bin" ]] && break
-done
+
+# Background-run + wait. CI bundles finish in ~1s; local dev machines
+# can take 10s+ for first-launch dyld + codesign quarantine validation
+# on macOS Sequoia, so the watchdog is generous (60s). It exists only
+# to defend against a hypothetical GUI fixture that holds the launcher
+# open indefinitely — not to time normal CLI bundles.
+UBUILDER_KEEP_EXTRACT=1 "$BUNDLE" >"$LOG" 2>&1 &
+BPID=$!
+( sleep 60 && kill -KILL "$BPID" 2>/dev/null ) &
+WPID=$!
+wait "$BPID" 2>/dev/null || true
+kill "$WPID" 2>/dev/null || true
+wait "$WPID" 2>/dev/null || true
+echo "[port-check] bundle exited"
+
+# Launcher prints `[ubuilder] UBUILDER_KEEP_EXTRACT set; preserving <path>`
+# to stderr when keep-extract is honored. Pull the path out of the log.
+EXTRACT="$(grep -E '^\[ubuilder\] UBUILDER_KEEP_EXTRACT set; preserving ' "$LOG" \
+            | sed -E 's/^\[ubuilder\] UBUILDER_KEEP_EXTRACT set; preserving //' \
+            | tail -1 || true)"
 echo "[port-check] EXTRACT=${EXTRACT:-(not found)}"
 
-# Wait for extraction to actually finish before SIGSTOP'ing. The launcher
-# extracts the whole runtime tree (bin/php, lib/*.dylib, ext/, app/) into
-# $EXTRACT THEN spawns the child interpreter. So the moment the launcher
-# has a child process, extraction is complete. We poll for that — it's
-# the only signal that fires AFTER extraction but BEFORE the child can
-# finish and trigger the launcher's atexit cleanup.
-extraction_done=0
-for i in $(seq 1 50); do
-    if pgrep -P "$PID" >/dev/null 2>&1; then
-        extraction_done=1
-        break
-    fi
-    # Bundle might have already finished + cleaned up (very fast CLI).
-    # If the extract dir is gone, give up on the "wait for child" path
-    # and just snapshot what we have (likely nothing).
-    [[ ! -d "$EXTRACT" ]] && break
-    sleep 0.05
-done
-echo "[port-check] extraction_done=$extraction_done"
-
-# Freeze the launcher AND its child so neither can clean up while we
-# snapshot. SIGSTOP is honored regardless of signal handlers, so this
-# is racy-safe even against a launcher that traps SIGTERM.
-kill -STOP "$PID" 2>/dev/null || true
-pgrep -P "$PID" 2>/dev/null | xargs kill -STOP 2>/dev/null || true
-
-# Mirror the entire extracted tree (runtime/ + app files like vendor/)
-# before the bundle deletes it. The launcher chdir()s into the extract
-# dir, so any dylibs loaded by the app via FFI (e.g. php-gui's Tcl/Tk)
-# live at the bundle root, not under runtime/.
 file_count=0
 if [[ -n "$EXTRACT" && -d "$EXTRACT" ]]; then
     cp -R "$EXTRACT" "$WORK/extracted"
@@ -107,20 +84,10 @@ if [[ -n "$EXTRACT" && -d "$EXTRACT" ]]; then
 fi
 echo "[port-check] snapshotted $file_count file(s)"
 
-# Now resume + terminate the bundle.
-kill -CONT "$PID" 2>/dev/null || true
-pgrep -P "$PID" 2>/dev/null | xargs kill -CONT 2>/dev/null || true
-kill -TERM "$PID" 2>/dev/null || true
-pkill -P "$PID" 2>/dev/null || true
-wait "$PID" 2>/dev/null || true
-
 if [[ ! -d "$WORK/extracted" ]]; then
     echo "error: could not snapshot extracted tree" >&2
-    echo "  PID:     $PID" >&2
     echo "  TMPDIR:  ${TMPDIR:-(unset)}" >&2
     echo "  EXTRACT: ${EXTRACT:-(empty)}" >&2
-    echo "  --- candidate temp dirs explored ---" >&2
-    ls -la "${TMPDIR%/}/" /var/folders/*/*/T/ /tmp/ 2>/dev/null | grep -E "ubuilder|^total" | head -20 >&2 || true
     echo "  --- bundle stdout/stderr ---" >&2
     cat "$LOG" >&2 || true
     exit 1

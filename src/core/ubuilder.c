@@ -1182,8 +1182,17 @@ static ub_result_t ub_run_modular_embedded_app(ub_runtime_type_t runtime, FILE* 
     
     /* S1: structured recursive remove instead of system("rm -rf …") /
      * system("rmdir /s /q …"). Drops the /bin/sh & external-tool dependency
-     * and is safe with paths containing spaces, quotes, or shell metachars. */
-    if (pc_remove_tree(temp_dir) != 0) {
+     * and is safe with paths containing spaces, quotes, or shell metachars.
+     *
+     * Debug knob: UBUILDER_KEEP_EXTRACT=1 skips cleanup and prints the
+     * extract path to stderr. Used by tests/bundle/assert-macos-portable.sh
+     * to avoid a race where a fast-finishing bundle (CLI fixture that just
+     * prints a line) cleans up before the port-check can snapshot the
+     * extracted tree. Also handy for ad-hoc debugging of bundle contents. */
+    const char* keep = getenv("UBUILDER_KEEP_EXTRACT");
+    if (keep && *keep && strcmp(keep, "0") != 0) {
+        fprintf(stderr, "[ubuilder] UBUILDER_KEEP_EXTRACT set; preserving %s\n", temp_dir);
+    } else if (pc_remove_tree(temp_dir) != 0) {
         fprintf(stderr, "Warning: Failed to clean up temporary directory: %s\n", temp_dir);
     }
     
