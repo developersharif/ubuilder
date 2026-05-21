@@ -19,6 +19,13 @@
 #else
     #include <dirent.h>
     #include <unistd.h>
+    #include <limits.h>   /* PATH_MAX — required for the realpath() buffers
+                             below: glibc's _FORTIFY_SOURCE wraps realpath()
+                             as __realpath_chk and aborts with "buffer
+                             overflow detected" when the destination is
+                             smaller than PATH_MAX, even if the resolved
+                             path would have fit. The check is on capacity,
+                             not on the actual write. */
 #endif
 
 // Forward declarations
@@ -805,7 +812,7 @@ static int mac_bundle_deps_recursive(const char* start_orig_path,
              * Dedup, otool, and the hardlink source must all use the
              * realpath; otherwise pc_copy_or_link_tree preserves the
              * symlink and the bundled `../Cellar/...` ref dangles. */
-            char real_path[1024];
+            char real_path[PATH_MAX];
             const char* canonical = resolved;
             if (realpath(resolved, real_path)) {
                 canonical = real_path;
@@ -1134,7 +1141,7 @@ static ub_result_t php_stage_synthetic_runtime(const char* php_bin,
      * Cellar tree. realpath() collapses the chain to the real binary so we
      * hardlink/copy the actual file. */
 #ifndef PLATFORM_WINDOWS
-    char php_real_path[1024];
+    char php_real_path[PATH_MAX];
     const char* php_to_stage = php_bin;
     if (realpath(php_bin, php_real_path)) {
         php_to_stage = php_real_path;
