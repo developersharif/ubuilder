@@ -328,11 +328,15 @@ jobs:
           )
           [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\test.ico", $ico)
 
-          # Bundle the python fixture WITH --icon. We don't care about the
-          # bundle running here — we only care that the embedded PE has the
-          # MAINICON resource name.
+          # Bundle the nodejs fixture WITH --icon. Nodejs (not python) is
+          # chosen because the Windows runner reliably has Node available
+          # but doesn't always have a Python runtime vendored — we want
+          # this check to fail ONLY when icon embedding itself breaks,
+          # not when the runtime probe upstream fails.
+          # We don't care about the bundle running here — we only care
+          # that the embedded PE contains the MAINICON resource name.
           $bundle = "$env:RUNNER_TEMP\icon-test.exe"
-          & $ub --project-dir=tests\bundle\fixtures\python `
+          & $ub --project-dir=tests\bundle\fixtures\nodejs `
                 --icon="$env:RUNNER_TEMP\test.ico" `
                 --output="$bundle"
           if ($LASTEXITCODE -ne 0) { Write-Host "build failed (exit $LASTEXITCODE)" -ForegroundColor Red; exit 1 }
